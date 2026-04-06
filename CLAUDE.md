@@ -61,3 +61,9 @@ Conventional commits. 不 `git add -A`，只 stage 当前变更涉及的文件�
 - pycookiecheat `as_cookies=True` 返回自定义 dataclass：`host_key`（非 `domain`）、`expires_utc`（Chrome 微秒时间戳，需 `/ 1e6 - 11644473600` 转 Unix 秒）、`is_secure`（非 `secure`）
 - site 名必须经过 `_validate_name()` 清洗，防路径遍历
 </important>
+
+### Learned Constraints
+
+- `context.add_cookies()` 是 context 级存储、domain 级隔离——多 tab 场景不需要改 cookie 注入策略，各 page 自动只看到自己 domain 的 cookie（详见 `specs/prototype/multi-tab-findings.md`）
+- HumanBehavior 和 CaptchaSolver 绑定单个 Page 实例，多 tab 必须每 tab 创建独立实例，不要复用/swap（Humanization 内部可能缓存 page 状态）
+- 关闭 page 完全隔离：不影响 context 和其他 page，关闭最后一个 page 后 context 仍存活可创建新 page
