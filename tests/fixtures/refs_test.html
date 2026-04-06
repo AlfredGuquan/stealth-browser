@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Refs Test Page</title>
+</head>
+<body>
+  <h1>Refs Test Page</h1>
+
+  <!-- Button with click handler -->
+  <button id="btn-submit" onclick="document.getElementById('click-result').textContent='clicked'">Submit</button>
+  <span id="click-result"></span>
+
+  <!-- Text input -->
+  <input id="input-name" type="text" name="username" placeholder="Enter name">
+
+  <!-- Link -->
+  <a id="link-home" href="#home">Home</a>
+
+  <!-- Select dropdown -->
+  <select id="select-color" name="color">
+    <option value="red">Red</option>
+    <option value="blue">Blue</option>
+    <option value="green">Green</option>
+  </select>
+
+  <!-- Textarea -->
+  <textarea id="textarea-bio" name="bio" placeholder="Bio"></textarea>
+
+  <!-- Role-based button -->
+  <div id="div-btn" role="button" tabindex="0" onclick="document.getElementById('role-result').textContent='role-clicked'">Role Button</div>
+  <span id="role-result"></span>
+
+  <!-- Form -->
+  <form id="test-form" onsubmit="return false;">
+    <input id="form-email" type="email" name="email" placeholder="Email">
+    <button id="form-submit" type="submit">Send</button>
+  </form>
+
+  <!-- Same-origin iframe (separate file to avoid srcdoc encoding issues) -->
+  <iframe id="test-iframe" src="refs_iframe.html" width="400" height="200"></iframe>
+</body>
+</html>

@@ -67,3 +67,8 @@ Conventional commits. 不 `git add -A`，只 stage 当前变更涉及的文件�
 - `context.add_cookies()` 是 context 级存储、domain 级隔离——多 tab 场景不需要改 cookie 注入策略，各 page 自动只看到自己 domain 的 cookie（详见 `specs/prototype/multi-tab-findings.md`）
 - HumanBehavior 和 CaptchaSolver 绑定单个 Page 实例，多 tab 必须每 tab 创建独立实例，不要复用/swap（Humanization 内部可能缓存 page 状态）
 - 关闭 page 完全隔离：不影响 context 和其他 page，关闭最后一个 page 后 context 仍存活可创建新 page
+- Snapshot refs 用 `data-ref` 属性注入 + `[data-ref="@eN"]` attribute selector 解析，不需要生成 CSS selector 或 XPath（详见 `specs/prototype/snapshot-refs-findings.md`）
+- iframe 内元素交互：先 `frame.evaluate()` 注入 ref，再 `page.frame_locator(selector).locator('[data-ref]')` 定位。daemon 需维护 ref → frame_index 映射
+- ref 编号必须跨所有 frames 使用单一计数器，避免 main page 和 iframe 的 ref 冲突
+- 导航后 ref 自动失效（DOM 替换），daemon 只需在导航命令时清空内存映射
+- cross-origin iframe 的 `frame.evaluate()` 会抛异常，snapshot 应标注 `[cross-origin]` 但不注入 ref
