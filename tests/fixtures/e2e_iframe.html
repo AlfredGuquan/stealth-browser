@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Iframe Content</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 10px; }
+    .feedback { color: #2a7; font-weight: bold; min-height: 1.5em; margin-top: 8px; }
+    button { padding: 6px 12px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h3>Embedded Frame Content</h3>
+  <button id="iframe-action-btn" onclick="document.getElementById('iframe-feedback').textContent='iframe button clicked'">
+    Click Me Inside Iframe
+  </button>
+  <div class="feedback" id="iframe-feedback"></div>
+  <input type="text" id="iframe-input" placeholder="Type in iframe">
+</body>
+</html>

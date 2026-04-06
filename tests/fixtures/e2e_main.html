@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>E2E Test - Main Page</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; }
+    .section { border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin: 20px 0; }
+    .section h2 { margin-top: 0; }
+    .feedback { color: #2a7; font-weight: bold; min-height: 1.5em; margin-top: 8px; }
+    label { display: block; margin: 8px 0 4px; }
+    input[type="text"], input[type="email"], select, textarea { padding: 6px 10px; width: 300px; }
+    button { padding: 8px 16px; cursor: pointer; margin: 4px; }
+    #delayed-content { display: none; }
+    iframe { border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <h1>E2E Test Page</h1>
+
+  <!-- Section 1: Registration Form -->
+  <div class="section" id="registration-section">
+    <h2>Registration</h2>
+    <form id="register-form" onsubmit="return handleSubmit(event)">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" placeholder="Enter username">
+
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" placeholder="Enter email">
+
+      <label for="color">Favorite Color</label>
+      <select id="color" name="color">
+        <option value="">-- Select --</option>
+        <option value="red">Red</option>
+        <option value="blue">Blue</option>
+        <option value="green">Green</option>
+      </select>
+
+      <label>
+        <input type="checkbox" id="agree" name="agree"> I agree to the terms
+      </label>
+
+      <button type="submit" id="submit-btn">Register</button>
+    </form>
+    <div class="feedback" id="register-feedback"></div>
+  </div>
+
+  <!-- Section 2: Navigation -->
+  <div class="section" id="navigation-section">
+    <h2>Navigation</h2>
+    <a href="e2e_page2.html" id="link-page2">Go to Page 2</a>
+  </div>
+
+  <!-- Section 3: Dialog -->
+  <div class="section" id="dialog-section">
+    <h2>Dialog Test</h2>
+    <button id="trigger-dialog" onclick="triggerDialog()">Open Confirmation Dialog</button>
+    <div class="feedback" id="dialog-feedback"></div>
+  </div>
+
+  <!-- Section 4: Delayed Content -->
+  <div class="section" id="delayed-section">
+    <h2>Dynamic Content</h2>
+    <p>Content will appear below after 3 seconds...</p>
+    <div id="delayed-content"></div>
+  </div>
+
+  <!-- Section 5: Iframe -->
+  <div class="section" id="iframe-section">
+    <h2>Embedded Frame</h2>
+    <iframe id="embedded-frame" src="e2e_iframe.html" width="500" height="200"></iframe>
+  </div>
+
+  <script>
+    // Registration form handler
+    function handleSubmit(event) {
+      event.preventDefault();
+      var username = document.getElementById('username').value;
+      var email = document.getElementById('email').value;
+      var color = document.getElementById('color').value;
+      var agreed = document.getElementById('agree').checked;
+
+      if (!username || !email || !color || !agreed) {
+        document.getElementById('register-feedback').textContent =
+          'Error: All fields are required and you must agree to the terms.';
+        return false;
+      }
+
+      document.getElementById('register-feedback').textContent =
+        'Registration successful! Username: ' + username + ', Email: ' + email + ', Color: ' + color;
+      return false;
+    }
+
+    // Dialog handler
+    function triggerDialog() {
+      // Uses confirm() which stealth-browser's dialog system should intercept
+      var result = confirm('Do you want to proceed with the action?');
+      document.getElementById('dialog-feedback').textContent =
+        result ? 'Dialog accepted' : 'Dialog dismissed';
+    }
+
+    // Delayed content - appears after 3 seconds
+    setTimeout(function() {
+      var el = document.getElementById('delayed-content');
+      el.style.display = 'block';
+      el.textContent = 'Dynamic content loaded successfully!';
+    }, 3000);
+  </script>
+</body>
+</html>
