@@ -92,14 +92,17 @@ class HumanBehavior:
                 await asyncio.sleep(random.uniform(0.08, 0.2))
 
             # Type the correct character
-            await self.page.keyboard.press(char)
+            if char.isascii() and len(char) == 1:
+                await self.page.keyboard.press(char)
+            else:
+                await self.page.keyboard.insert_text(char)
 
             # Variable inter-key delay
             if char == " ":
                 # Slightly longer pause after space (word boundary)
                 await asyncio.sleep(random.uniform(0.12, 0.25))
-            elif char in ".,!?":
-                # Pause after punctuation
+            elif char in ".,!?\u3002\uff0c\uff01\uff1f":
+                # Pause after punctuation (ASCII + Chinese)
                 await asyncio.sleep(random.uniform(0.15, 0.35))
             else:
                 await asyncio.sleep(random.uniform(0.04, 0.12))
@@ -121,10 +124,13 @@ class HumanBehavior:
                 await self.page.keyboard.press("Backspace")
                 await asyncio.sleep(random.uniform(0.08, 0.2))
 
-            await self.page.keyboard.press(char)
+            if char.isascii() and len(char) == 1:
+                await self.page.keyboard.press(char)
+            else:
+                await self.page.keyboard.insert_text(char)
             if char == " ":
                 await asyncio.sleep(random.uniform(0.12, 0.25))
-            elif char in ".,!?":
+            elif char in ".,!?\u3002\uff0c\uff01\uff1f":
                 await asyncio.sleep(random.uniform(0.15, 0.35))
             else:
                 await asyncio.sleep(random.uniform(0.04, 0.12))
