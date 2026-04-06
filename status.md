@@ -47,3 +47,4 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 - E2E fixture 创建 + fresh agent 验证：本地 fixture（表单/dialog/iframe/延迟元素/多页面导航）+ 独立 agent 驱动 7 个验收场景 [2026-04-07]
 - 反检测独立验证：bot.sannysoft.com 57/57 PASS，V2 新增行为（ref 注入/dialog listener/多 tab）未暴露自动化信号 [2026-04-07]
 - E2E 发现并修复 2 个 bug：back/forward bfcache 超时（wait_until commit）、batch get 结果丢失（formatter fallback）[2026-04-07]
+- 反检测深度验证：rebrowser-bot-detector 6/6 PASS + bot.incolumitas.com 9/9 new tests OK。发现 Service Worker UA 泄漏 HeadlessChrome，用 --user-agent 启动参数修复 [2026-04-07]
