@@ -29,6 +29,26 @@ def mock_engine():
     engine.page = MagicMock()
     engine.page.url = "https://example.com/"
     engine.inject_cookies = AsyncMock(return_value=5)
+
+    # V2 methods
+    engine.select_option = AsyncMock(return_value="selected 'v1' on #sel")
+    engine.check = AsyncMock(return_value="checked #cb")
+    engine.uncheck = AsyncMock(return_value="unchecked #cb")
+    engine.wait_for_element = AsyncMock(return_value="element #el is visible")
+    engine.wait_for_text = AsyncMock(return_value="text 'Hello' found")
+    engine.wait_for_network_idle = AsyncMock(return_value="network idle")
+    engine.wait_for_timeout = AsyncMock(return_value="waited 1000ms")
+    engine.dialog_accept = AsyncMock(return_value="dialog accepted")
+    engine.dialog_dismiss = AsyncMock(return_value="dialog dismissed")
+    engine.dialog_info = MagicMock(return_value={"present": False})
+    engine.go_back = AsyncMock(return_value={"url": "https://example.com/back", "title": "Back"})
+    engine.go_forward = AsyncMock(return_value={"url": "https://example.com/fwd", "title": "Forward"})
+    engine.reload = AsyncMock(return_value={"url": "https://example.com/", "title": "Reloaded"})
+    engine.tab_list = AsyncMock(return_value=[{"tab_id": 1, "url": "https://example.com/", "title": "Example", "active": True}])
+    engine.tab_create = AsyncMock(return_value={"tab_id": 2})
+    engine.tab_switch = MagicMock(return_value="switched to tab 2")
+    engine.tab_close = AsyncMock(return_value="closed tab 1")
+    engine.set_auto_dismiss = MagicMock(return_value="dialog auto-dismiss on")
     return engine
 
 
@@ -121,6 +141,236 @@ class TestDaemonHandler:
         assert handler.idle_seconds < 1.0
 
 
+class TestSelectCheckCommands:
+    """F10: select, check, uncheck via daemon."""
+
+    @pytest.mark.asyncio
+    async def test_select(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "select", "selector": "#dropdown", "value": "opt1"
+        })
+        assert result["status"] == "ok"
+        mock_engine.select_option.assert_called_once_with("#dropdown", "opt1")
+
+    @pytest.mark.asyncio
+    async def test_check(self, handler, mock_engine):
+        result = await handler.handle({"command": "check", "selector": "#cb"})
+        assert result["status"] == "ok"
+        mock_engine.check.assert_called_once_with("#cb")
+
+    @pytest.mark.asyncio
+    async def test_uncheck(self, handler, mock_engine):
+        result = await handler.handle({"command": "uncheck", "selector": "#cb"})
+        assert result["status"] == "ok"
+        mock_engine.uncheck.assert_called_once_with("#cb")
+
+
+class TestWaitCommands:
+    """F7: wait commands via daemon."""
+
+    @pytest.mark.asyncio
+    async def test_wait_element(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "wait", "type": "element", "target": "#el"
+        })
+        assert result["status"] == "ok"
+        mock_engine.wait_for_element.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_wait_text(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "wait", "type": "text", "target": "Hello"
+        })
+        assert result["status"] == "ok"
+        mock_engine.wait_for_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_wait_network_idle(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "wait", "type": "network-idle"
+        })
+        assert result["status"] == "ok"
+        mock_engine.wait_for_network_idle.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_wait_timeout(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "wait", "type": "timeout", "target": "500"
+        })
+        assert result["status"] == "ok"
+        mock_engine.wait_for_timeout.assert_called_once_with(500)
+
+    @pytest.mark.asyncio
+    async def test_wait_unknown_type(self, handler):
+        result = await handler.handle({
+            "command": "wait", "type": "bogus"
+        })
+        assert result["status"] == "error"
+
+
+class TestDialogCommands:
+    """F8: dialog commands via daemon."""
+
+    @pytest.mark.asyncio
+    async def test_dialog_accept(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "dialog", "action": "accept"
+        })
+        assert result["status"] == "ok"
+        mock_engine.dialog_accept.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dialog_accept_with_text(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "dialog", "action": "accept", "text": "hi"
+        })
+        assert result["status"] == "ok"
+        mock_engine.dialog_accept.assert_called_once_with("hi")
+
+    @pytest.mark.asyncio
+    async def test_dialog_dismiss(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "dialog", "action": "dismiss"
+        })
+        assert result["status"] == "ok"
+        mock_engine.dialog_dismiss.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dialog_info(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "dialog", "action": "info"
+        })
+        assert result["status"] == "ok"
+        assert result["present"] is False
+
+    @pytest.mark.asyncio
+    async def test_dialog_auto_dismiss(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "dialog", "action": "auto-dismiss", "enabled": True
+        })
+        assert result["status"] == "ok"
+        mock_engine.set_auto_dismiss.assert_called_once_with(True)
+
+    @pytest.mark.asyncio
+    async def test_dialog_unknown_action(self, handler):
+        result = await handler.handle({
+            "command": "dialog", "action": "bogus"
+        })
+        assert result["status"] == "error"
+
+
+class TestNavigationCommands:
+    """F9: back, forward, reload via daemon."""
+
+    @pytest.mark.asyncio
+    async def test_back(self, handler, mock_engine):
+        result = await handler.handle({"command": "back"})
+        assert result["status"] == "ok"
+        assert result["url"] == "https://example.com/back"
+        mock_engine.go_back.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_forward(self, handler, mock_engine):
+        result = await handler.handle({"command": "forward"})
+        assert result["status"] == "ok"
+        assert result["url"] == "https://example.com/fwd"
+
+    @pytest.mark.asyncio
+    async def test_reload(self, handler, mock_engine):
+        result = await handler.handle({"command": "reload"})
+        assert result["status"] == "ok"
+        assert result["title"] == "Reloaded"
+
+
+class TestTabCommands:
+    """F11: tab commands via daemon."""
+
+    @pytest.mark.asyncio
+    async def test_tab_list(self, handler, mock_engine):
+        result = await handler.handle({"command": "tab", "action": "list"})
+        assert result["status"] == "ok"
+        assert len(result["tabs"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_tab_create(self, handler, mock_engine):
+        result = await handler.handle({"command": "tab", "action": "create"})
+        assert result["status"] == "ok"
+        assert result["tab_id"] == 2
+
+    @pytest.mark.asyncio
+    async def test_tab_create_with_url(self, handler, mock_engine):
+        mock_engine.tab_create = AsyncMock(return_value={
+            "tab_id": 2, "url": "https://example.com/", "title": "Example"
+        })
+        result = await handler.handle({
+            "command": "tab", "action": "create", "url": "https://example.com/"
+        })
+        assert result["status"] == "ok"
+        assert result["url"] == "https://example.com/"
+
+    @pytest.mark.asyncio
+    async def test_tab_switch(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "tab", "action": "switch", "tab_id": 2
+        })
+        assert result["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_tab_close(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "tab", "action": "close", "tab_id": 1
+        })
+        assert result["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_tab_unknown_action(self, handler):
+        result = await handler.handle({
+            "command": "tab", "action": "bogus"
+        })
+        assert result["status"] == "error"
+
+
+class TestBatchCommand:
+    """F13: batch command execution."""
+
+    @pytest.mark.asyncio
+    async def test_batch_success(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "batch",
+            "commands": [
+                {"command": "click", "selector": "#btn"},
+                {"command": "screenshot"},
+            ],
+            "fast": True,
+        })
+        assert result["status"] == "ok"
+        assert len(result["results"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_batch_stops_on_error(self, handler, mock_engine):
+        mock_engine.click = AsyncMock(side_effect=Exception("element not found"))
+        result = await handler.handle({
+            "command": "batch",
+            "commands": [
+                {"command": "click", "selector": "#bad"},
+                {"command": "screenshot"},
+            ],
+            "fast": True,
+        })
+        # The click raises an exception, so it should be caught and returned
+        # as an error result in the batch
+        assert result["status"] == "error"
+        assert result["failed_index"] == 0
+
+    @pytest.mark.asyncio
+    async def test_batch_empty(self, handler):
+        result = await handler.handle({
+            "command": "batch", "commands": [], "fast": True,
+        })
+        assert result["status"] == "ok"
+        assert result["results"] == []
+
+
 class TestIsDaemonRunning:
     def test_no_pid_file(self, tmp_path):
         with patch("stealth_browser.daemon.pid_path", return_value=tmp_path / "nope.pid"):
@@ -128,7 +378,7 @@ class TestIsDaemonRunning:
 
     def test_stale_pid(self, tmp_path):
         pid_file = tmp_path / "stale.pid"
-        pid_file.write_text("999999999")  # Non-existent PID
+        pid_file.write_text("999999999")
         sock_file = tmp_path / "stale.sock"
         sock_file.touch()
         with (

@@ -5,15 +5,23 @@ Key constraints (tracer-verified):
 - Headless UA still contains "HeadlessChrome" -- must override in new_context()
 - Must use patchright.async_api for daemon architecture (sync API greenlet issue)
 - Cookie injection: after new_context(), before first goto()
+
+V2 additions:
+- Multi-tab: self.pages dict, active_tab_id, per-tab HumanBehavior/CaptchaSolver
+- Snapshot refs: data-ref injection, ref_map, resolve_selector()
+- iframe support: cross-frame ref injection with global counter
+- Wait, dialog, navigation, select/check commands
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import re
 from typing import Any
 
-from patchright.async_api import Browser, BrowserContext, Page, Playwright
+from patchright.async_api import Browser, BrowserContext, Dialog, Page, Playwright
 from patchright.async_api import async_playwright
 
 from .behavior import HumanBehavior
@@ -23,29 +31,81 @@ from .utils import get_chrome_ua, is_login_redirect, warn
 
 logger = logging.getLogger("stealth_browser.engine")
 
+# Ref pattern: @e0, @e1, @e42, etc.
+REF_PATTERN = re.compile(r"^@e\d+$")
+
+
+class TabInfo:
+    """Per-tab state: page + behavior + captcha instances."""
+
+    __slots__ = ("page", "behavior", "captcha")
+
+    def __init__(self, page: Page, *, fast: bool = False):
+        self.page = page
+        self.behavior = HumanBehavior(page, fast=fast)
+        self.captcha = CaptchaSolver(page, self.behavior)
+
 
 class StealthEngine:
     """Manages a Patchright browser instance with anti-detection configuration.
 
     Provides the async API used by the daemon to handle CLI commands.
+
+    V2: Multi-tab architecture. Each tab gets its own HumanBehavior and
+    CaptchaSolver instances (they cache page state internally).
     """
 
     def __init__(self) -> None:
         self.playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
-        self.page: Page | None = None
-        self.behavior: HumanBehavior | None = None
-        self.captcha: CaptchaSolver | None = None
+
+        # Multi-tab state (F11)
+        self._tabs: dict[int, TabInfo] = {}
+        self._active_tab_id: int = 0
+        self._next_tab_id: int = 1  # PRD: tab IDs start at 1
+
+        # Snapshot refs state (F6/F12)
+        self._ref_map: dict[str, dict[str, Any]] = {}
+        # Maps ref -> {frame_index: int, tag: str, text: str}
+
+        # Dialog state (F8)
+        self._pending_dialog: Dialog | None = None
+        self._last_dialog: Dialog | None = None
+        self._dialog_handled: bool = True
+        self._auto_dismiss_dialogs: bool = False  # Default off: let user handle dialogs
+
         self._current_site: str | None = None
         self._headed: bool = False
+
+    # -- V1 compat properties --
+
+    @property
+    def page(self) -> Page | None:
+        if not self._tabs:
+            if self.browser is not None:
+                raise RuntimeError("no active tab -- create one with 'tab create'")
+            return None
+        tab = self._tabs.get(self._active_tab_id)
+        return tab.page if tab else None
+
+    @property
+    def behavior(self) -> HumanBehavior | None:
+        tab = self._tabs.get(self._active_tab_id)
+        return tab.behavior if tab else None
+
+    @property
+    def captcha(self) -> CaptchaSolver | None:
+        tab = self._tabs.get(self._active_tab_id)
+        return tab.captcha if tab else None
+
+    # -- Lifecycle --
 
     async def launch(self, *, headed: bool = False) -> None:
         """Launch the browser with anti-detection configuration."""
         self._headed = headed
         self.playwright = await async_playwright().start()
 
-        # System Chrome is required -- bundled Chromium leaks 11+ detection signals
         chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         if not os.path.exists(chrome_path):
             raise RuntimeError(
@@ -58,17 +118,46 @@ class StealthEngine:
             channel="chrome",
         )
 
-        # Create context with realistic UA (overrides HeadlessChrome in headless mode)
         self.context = await self.browser.new_context(
             user_agent=get_chrome_ua(),
             viewport={"width": 1920, "height": 1080},
             locale="en-US",
         )
 
-        self.page = await self.context.new_page()
-        self.behavior = HumanBehavior(self.page, fast=False)
-        self.captcha = CaptchaSolver(self.page, self.behavior)
+        # Create initial tab
+        page = await self.context.new_page()
+        self._register_tab(page)
+        self._setup_dialog_handler(page)
         logger.info("browser launched (headed=%s)", headed)
+
+    def _register_tab(self, page: Page) -> int:
+        """Register a new page as a tab. Returns its tab_id."""
+        tab_id = self._next_tab_id
+        self._next_tab_id += 1
+        self._tabs[tab_id] = TabInfo(page, fast=False)
+        self._active_tab_id = tab_id
+        return tab_id
+
+    def _setup_dialog_handler(self, page: Page) -> None:
+        """Attach dialog handler to a page (F8).
+
+        When auto-dismiss is off (default), the dialog is stored in
+        _pending_dialog for explicit accept/dismiss via CLI.
+        When auto-dismiss is on, the dialog is dismissed immediately
+        and only logged.
+        """
+        async def _on_dialog(dialog: Dialog) -> None:
+            self._last_dialog = dialog
+            if self._auto_dismiss_dialogs:
+                await dialog.dismiss()
+                self._dialog_handled = True
+                self._pending_dialog = None
+                logger.info("auto-dismissed %s dialog: %s", dialog.type, dialog.message)
+            else:
+                self._pending_dialog = dialog
+                self._dialog_handled = False
+
+        page.on("dialog", _on_dialog)
 
     async def shutdown(self) -> None:
         """Close browser and clean up."""
@@ -78,41 +167,34 @@ class StealthEngine:
         if self.playwright:
             await self.playwright.stop()
             self.playwright = None
-        self.page = None
+        self._tabs.clear()
         self.context = None
-        self.behavior = None
-        self.captcha = None
+        self._ref_map.clear()
         logger.info("browser shut down")
 
     @property
     def is_alive(self) -> bool:
         return self.browser is not None and self.browser.is_connected()
 
-    async def inject_cookies(self, site: str, url: str) -> int:
-        """Extract/load cookies for a site and inject into the browser context.
+    # -- Cookie --
 
-        Returns the number of cookies injected.
-        """
+    async def inject_cookies(self, site: str, url: str) -> int:
+        """Extract/load cookies for a site and inject into the browser context."""
         if self.context is None:
             raise RuntimeError("browser not launched")
-
         cookies = get_cookies_for_site(site, url)
         if not cookies:
             return 0
-
         await self.context.add_cookies(cookies)
         self._current_site = site
         return len(cookies)
 
+    # -- Navigation (F9 extends) --
+
     async def navigate(
         self, url: str, *, site: str | None = None, timeout: int = 30000
     ) -> dict[str, Any]:
-        """Navigate to a URL. If site is given, inject cookies first.
-
-        Returns dict with url, title, and login_redirect flag.
-        After navigation, checks for login redirect (session expiry).
-        If detected and site is set, re-extracts cookies and retries once.
-        """
+        """Navigate to a URL. If site is given, inject cookies first."""
         if self.page is None:
             raise RuntimeError("browser not launched")
 
@@ -121,13 +203,14 @@ class StealthEngine:
             logger.info("injected %d cookies for %s", count, site)
 
         await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout)
-        # Brief wait for redirects to settle
         await self.page.wait_for_timeout(2000)
+
+        # Navigation invalidates refs
+        self._clear_refs()
 
         final_url = self.page.url
         title = await self.page.title()
 
-        # Check for login redirect
         if is_login_redirect(final_url) and site:
             logger.info("login redirect detected, re-extracting cookies")
             clear_cache(site)
@@ -141,7 +224,6 @@ class StealthEngine:
                 title = await self.page.title()
 
                 if is_login_redirect(final_url):
-                    # Still redirecting after re-extract -- session truly expired
                     warn(
                         f"session expired for {site}. "
                         f"Please log in to {site} in Chrome and retry."
@@ -168,26 +250,106 @@ class StealthEngine:
             "login_redirect": False,
         }
 
-    async def snapshot(self, *, interactive: bool = False) -> str:
-        """Return a text snapshot of the page.
+    async def go_back(self) -> dict[str, Any]:
+        """Navigate back (F9)."""
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        await self.page.go_back(wait_until="commit")
+        await self.page.wait_for_timeout(1000)
+        self._clear_refs()
+        return {"url": self.page.url, "title": await self.page.title()}
 
-        If interactive=True, includes interactive elements (links, buttons, inputs)
-        with indices for easy reference.
+    async def go_forward(self) -> dict[str, Any]:
+        """Navigate forward (F9)."""
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        await self.page.go_forward(wait_until="commit")
+        await self.page.wait_for_timeout(1000)
+        self._clear_refs()
+        return {"url": self.page.url, "title": await self.page.title()}
+
+    async def reload(self) -> dict[str, Any]:
+        """Reload current page (F9)."""
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        await self.page.reload(wait_until="domcontentloaded")
+        self._clear_refs()
+        return {"url": self.page.url, "title": await self.page.title()}
+
+    # -- Snapshot with refs (F6/F12) --
+
+    def _clear_refs(self) -> None:
+        """Clear the ref map (after navigation or new snapshot)."""
+        self._ref_map.clear()
+
+    def _resolve_selector(self, selector: str) -> tuple[str, int]:
+        """Resolve a selector that may be a ref (@eN) or CSS selector.
+
+        Returns (css_selector, frame_index).
+        """
+        if REF_PATTERN.match(selector):
+            ref_info = self._ref_map.get(selector)
+            if ref_info is None:
+                raise ValueError(
+                    f"ref {selector} not found. "
+                    "Run 'snapshot -i' to refresh refs."
+                )
+            return f'[data-ref="{selector}"]', ref_info["frame_index"]
+        return selector, 0  # CSS selector, main frame
+
+    async def _get_locator(self, selector: str, *, _resolved: tuple[str, int] | None = None):
+        """Get a Playwright locator for a selector (ref or CSS), handling iframes.
+
+        If _resolved is provided, skip resolve_selector (avoids double resolve).
         """
         if self.page is None:
             raise RuntimeError("browser not launched")
 
-        # Basic page info
+        css, frame_index = _resolved if _resolved else self._resolve_selector(selector)
+
+        if frame_index == 0:
+            return self.page.locator(css)
+
+        # iframe locator: find the frame by index
+        frames = self.page.frames
+        if frame_index < len(frames):
+            frame = frames[frame_index]
+            # Use frame.locator for same-origin frames
+            return frame.locator(css)
+
+        raise ValueError(
+            f"frame index {frame_index} out of range "
+            f"(page has {len(frames)} frames)"
+        )
+
+    async def snapshot(self, *, interactive: bool = False) -> str:
+        """Return a text snapshot of the page.
+
+        If interactive=True, injects data-ref attributes and returns
+        elements with @eN refs (F6). Traverses iframes (F12).
+        """
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+
         url = self.page.url
         title = await self.page.title()
         lines = [f"URL: {url}", f"Title: {title}", ""]
 
         if interactive:
-            # List interactive elements with indices
-            elements = await self.page.evaluate("""() => {
-                const selectors = 'a, button, input, select, textarea, [role="button"], [onclick]';
+            # Clear old refs before injecting new ones
+            self._clear_refs()
+
+            # Inject refs into main frame and collect elements
+            all_elements = []
+            ref_counter = 0
+
+            # Main frame (frame_index=0)
+            main_result = await self.page.evaluate("""(startIndex) => {
+                const selectors = 'a, button, input, select, textarea, [role="button"], [role="checkbox"], [role="radio"], [onclick]';
                 const els = document.querySelectorAll(selectors);
                 return Array.from(els).map((el, i) => {
+                    const ref = '@e' + (startIndex + i);
+                    el.setAttribute('data-ref', ref);
                     const tag = el.tagName.toLowerCase();
                     const text = el.textContent?.trim().slice(0, 80) || '';
                     const type = el.getAttribute('type') || '';
@@ -197,25 +359,94 @@ class StealthEngine:
                     const role = el.getAttribute('role') || '';
                     const value = el.value || '';
                     const ariaLabel = el.getAttribute('aria-label') || '';
+                    const checked = el.checked;
+                    const tagName = el.tagName;
 
-                    let desc = `[${i}] <${tag}`;
-                    if (type) desc += ` type="${type}"`;
-                    if (name) desc += ` name="${name}"`;
-                    if (role) desc += ` role="${role}"`;
-                    if (placeholder) desc += ` placeholder="${placeholder}"`;
+                    let desc = ref + ' <' + tag;
+                    if (type) desc += ' type="' + type + '"';
+                    if (name) desc += ' name="' + name + '"';
+                    if (role && role !== 'button') desc += ' role="' + role + '"';
+                    if (placeholder) desc += ' placeholder="' + placeholder + '"';
+                    if (checked) desc += ' checked';
                     desc += '>';
                     if (text && tag !== 'input' && tag !== 'textarea') desc += ' ' + text;
                     if (value && (tag === 'input' || tag === 'textarea')) desc += ' value="' + value.slice(0, 40) + '"';
                     if (href) desc += ' -> ' + href.slice(0, 80);
                     if (ariaLabel) desc += ' [' + ariaLabel + ']';
-                    return desc;
+                    return {ref, tag, text: text.slice(0, 80), desc};
                 });
-            }""")
-            lines.append(f"Interactive elements ({len(elements)}):")
-            for el in elements:
+            }""", ref_counter)
+
+            for item in main_result:
+                self._ref_map[item["ref"]] = {
+                    "frame_index": 0,
+                    "tag": item["tag"],
+                    "text": item["text"],
+                }
+                all_elements.append(item["desc"])
+            ref_counter += len(main_result)
+
+            # Traverse iframes (F12)
+            frames = self.page.frames
+            for fi, frame in enumerate(frames):
+                if fi == 0:
+                    continue  # Skip main frame (already done)
+
+                # Check if cross-origin
+                try:
+                    frame_result = await frame.evaluate("""(startIndex) => {
+                        const selectors = 'a, button, input, select, textarea, [role="button"], [role="checkbox"], [role="radio"], [onclick]';
+                        const els = document.querySelectorAll(selectors);
+                        return Array.from(els).map((el, i) => {
+                            const ref = '@e' + (startIndex + i);
+                            el.setAttribute('data-ref', ref);
+                            const tag = el.tagName.toLowerCase();
+                            const text = el.textContent?.trim().slice(0, 80) || '';
+                            const type = el.getAttribute('type') || '';
+                            const name = el.getAttribute('name') || '';
+                            const href = el.getAttribute('href') || '';
+                            const placeholder = el.getAttribute('placeholder') || '';
+                            const role = el.getAttribute('role') || '';
+                            const value = el.value || '';
+                            const ariaLabel = el.getAttribute('aria-label') || '';
+                            const checked = el.checked;
+
+                            let desc = ref + ' <' + tag;
+                            if (type) desc += ' type="' + type + '"';
+                            if (name) desc += ' name="' + name + '"';
+                            if (role && role !== 'button') desc += ' role="' + role + '"';
+                            if (placeholder) desc += ' placeholder="' + placeholder + '"';
+                            if (checked) desc += ' checked';
+                            desc += '>';
+                            if (text && tag !== 'input' && tag !== 'textarea') desc += ' ' + text;
+                            if (value && (tag === 'input' || tag === 'textarea')) desc += ' value="' + value.slice(0, 40) + '"';
+                            if (href) desc += ' -> ' + href.slice(0, 80);
+                            if (ariaLabel) desc += ' [' + ariaLabel + ']';
+                            return {ref, tag, text: text.slice(0, 80), desc};
+                        });
+                    }""", ref_counter)
+
+                    if frame_result:
+                        frame_name = frame.name or frame.url or f"frame-{fi}"
+                        all_elements.append(f"  [iframe: {frame_name}]")
+                        for item in frame_result:
+                            self._ref_map[item["ref"]] = {
+                                "frame_index": fi,
+                                "tag": item["tag"],
+                                "text": item["text"],
+                            }
+                            all_elements.append(f"  {item['desc']}")
+                        ref_counter += len(frame_result)
+
+                except Exception:
+                    # Cross-origin iframe -- can't inject refs
+                    frame_name = frame.name or frame.url or f"frame-{fi}"
+                    all_elements.append(f"  [iframe: {frame_name}] [cross-origin]")
+
+            lines.append(f"Interactive elements ({len(self._ref_map)}):")
+            for el in all_elements:
                 lines.append(f"  {el}")
         else:
-            # Plain text content
             text = await self.page.evaluate("""() => {
                 return document.body?.innerText?.slice(0, 4000) || '';
             }""")
@@ -223,19 +454,40 @@ class StealthEngine:
 
         return "\n".join(lines)
 
+    # -- Interaction commands --
+
     async def click(self, selector: str) -> str:
-        """Click an element with human behavior simulation."""
+        """Click an element with human behavior simulation.
+
+        Accepts @eN refs or CSS selectors.
+        """
         if self.behavior is None:
             raise RuntimeError("browser not launched")
-        await self.behavior.click(selector)
+
+        css, frame_index = self._resolve_selector(selector)
+        if frame_index == 0:
+            await self.behavior.click(css)
+        else:
+            # For iframe elements, get the locator and click directly
+            locator = await self._get_locator(selector)
+            await locator.click()
         await self.page.wait_for_timeout(500)
         return f"clicked {selector}"
 
     async def fill(self, selector: str, text: str) -> str:
-        """Fill an input with human-like typing."""
+        """Fill an input with human-like typing.
+
+        Accepts @eN refs or CSS selectors.
+        """
         if self.behavior is None:
             raise RuntimeError("browser not launched")
-        await self.behavior.fill(selector, text)
+
+        css, frame_index = self._resolve_selector(selector)
+        if frame_index == 0:
+            await self.behavior.fill(css, text)
+        else:
+            locator = await self._get_locator(selector)
+            await locator.fill(text)
         return f"filled {selector} with {len(text)} chars"
 
     async def type_text(self, text: str) -> str:
@@ -256,7 +508,7 @@ class StealthEngine:
         """Upload a file to a file input element."""
         if self.page is None:
             raise RuntimeError("browser not launched")
-        locator = self.page.locator(selector)
+        locator = await self._get_locator(selector)
         await locator.set_input_files(file_path)
         return f"uploaded {file_path} to {selector}"
 
@@ -281,11 +533,7 @@ class StealthEngine:
         return await self.page.evaluate(expression)
 
     async def get_info(self, what: str, selector: str | None = None) -> str:
-        """Get information from the page.
-
-        what: "text", "url", "title"
-        selector: optional CSS selector (for "text" mode)
-        """
+        """Get information from the page."""
         if self.page is None:
             raise RuntimeError("browser not launched")
 
@@ -295,7 +543,7 @@ class StealthEngine:
             return await self.page.title()
         elif what == "text":
             if selector:
-                locator = self.page.locator(selector)
+                locator = await self._get_locator(selector)
                 return await locator.inner_text()
             else:
                 return await self.page.evaluate(
@@ -303,6 +551,204 @@ class StealthEngine:
                 )
         else:
             raise ValueError(f"unknown info type: {what}")
+
+    # -- Select/Check (F10) --
+
+    async def select_option(self, selector: str, value: str) -> str:
+        """Select an option from a <select> element.
+
+        Hover before selecting for human-like behavior.
+        """
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+
+        resolved = self._resolve_selector(selector)
+        css, frame_index = resolved
+        locator = await self._get_locator(selector, _resolved=resolved)
+
+        # Human-like: hover first (works for both main frame and iframes)
+        await locator.hover()
+        await asyncio.sleep(0.1)
+
+        await locator.select_option(value)
+        return f"selected '{value}' on {selector}"
+
+    async def check(self, selector: str) -> str:
+        """Check a checkbox or radio button (F10). Hover before checking."""
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+
+        resolved = self._resolve_selector(selector)
+        locator = await self._get_locator(selector, _resolved=resolved)
+
+        # Human-like: hover first (works for both main frame and iframes)
+        await locator.hover()
+        await asyncio.sleep(0.1)
+
+        await locator.check()
+        return f"checked {selector}"
+
+    async def uncheck(self, selector: str) -> str:
+        """Uncheck a checkbox (F10). Hover before unchecking."""
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+
+        resolved = self._resolve_selector(selector)
+        locator = await self._get_locator(selector, _resolved=resolved)
+
+        # Human-like: hover first (works for both main frame and iframes)
+        await locator.hover()
+        await asyncio.sleep(0.1)
+
+        await locator.uncheck()
+        return f"unchecked {selector}"
+
+    # -- Wait (F7) --
+
+    async def wait_for_element(
+        self, selector: str, *, timeout: int = 30000
+    ) -> str:
+        """Wait for an element to appear (F7)."""
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+
+        locator = await self._get_locator(selector)
+        await locator.wait_for(state="visible", timeout=timeout)
+        return f"element {selector} is visible"
+
+    async def wait_for_text(self, text: str, *, timeout: int = 30000) -> str:
+        """Wait for text to appear on the page (F7)."""
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        locator = self.page.get_by_text(text)
+        await locator.wait_for(state="visible", timeout=timeout)
+        return f"text '{text}' found"
+
+    async def wait_for_network_idle(self, *, timeout: int = 30000) -> str:
+        """Wait for network to be idle (F7)."""
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        await self.page.wait_for_load_state("networkidle", timeout=timeout)
+        return "network idle"
+
+    async def wait_for_timeout(self, ms: int) -> str:
+        """Wait for a fixed duration in milliseconds (F7)."""
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        await self.page.wait_for_timeout(ms)
+        return f"waited {ms}ms"
+
+    # -- Dialog (F8) --
+
+    async def dialog_accept(self, text: str | None = None) -> str:
+        """Accept the pending dialog (F8)."""
+        if self._pending_dialog is None:
+            return "no dialog present"
+        if text is not None:
+            await self._pending_dialog.accept(text)
+        else:
+            await self._pending_dialog.accept()
+        self._dialog_handled = True
+        self._pending_dialog = None
+        return "dialog accepted"
+
+    async def dialog_dismiss(self) -> str:
+        """Dismiss the pending dialog (F8)."""
+        if self._pending_dialog is None:
+            return "no dialog present"
+        await self._pending_dialog.dismiss()
+        self._dialog_handled = True
+        self._pending_dialog = None
+        return "dialog dismissed"
+
+    def dialog_info(self) -> dict[str, Any]:
+        """Return info about the current/last dialog (F8)."""
+        if self._pending_dialog is not None:
+            return {
+                "present": True,
+                "type": self._pending_dialog.type,
+                "message": self._pending_dialog.message,
+                "default_value": self._pending_dialog.default_value,
+                "handled": False,
+            }
+        if self._last_dialog is not None:
+            return {
+                "present": True,
+                "type": self._last_dialog.type,
+                "message": self._last_dialog.message,
+                "default_value": self._last_dialog.default_value,
+                "handled": self._dialog_handled,
+            }
+        return {"present": False}
+
+    def set_auto_dismiss(self, enabled: bool) -> str:
+        """Toggle auto-dismiss mode for dialogs (F8)."""
+        self._auto_dismiss_dialogs = enabled
+        return f"dialog auto-dismiss {'on' if enabled else 'off'}"
+
+    # -- Multi-tab (F11) --
+
+    async def tab_create(self, url: str | None = None) -> dict[str, Any]:
+        """Create a new tab, optionally navigating to a URL."""
+        if self.context is None:
+            raise RuntimeError("browser not launched")
+
+        page = await self.context.new_page()
+        tab_id = self._register_tab(page)
+        self._setup_dialog_handler(page)
+
+        result: dict[str, Any] = {"tab_id": tab_id}
+        if url:
+            await page.goto(url, wait_until="domcontentloaded")
+            result["url"] = page.url
+            result["title"] = await page.title()
+
+        self._clear_refs()
+        return result
+
+    async def tab_close(self, tab_id: int | None = None) -> str:
+        """Close a tab. If tab_id is None, close the active tab."""
+        if tab_id is None:
+            tab_id = self._active_tab_id
+
+        tab = self._tabs.get(tab_id)
+        if tab is None:
+            raise ValueError(f"tab {tab_id} not found")
+
+        await tab.page.close()
+        del self._tabs[tab_id]
+
+        # Switch to another tab if we closed the active one
+        if tab_id == self._active_tab_id:
+            if self._tabs:
+                self._active_tab_id = next(iter(self._tabs))
+            # If no tabs remain, context is still alive and can create new pages
+
+        self._clear_refs()
+        return f"closed tab {tab_id}"
+
+    def tab_switch(self, tab_id: int) -> str:
+        """Switch to a different tab."""
+        if tab_id not in self._tabs:
+            raise ValueError(f"tab {tab_id} not found")
+        self._active_tab_id = tab_id
+        self._clear_refs()
+        return f"switched to tab {tab_id}"
+
+    async def tab_list(self) -> list[dict[str, Any]]:
+        """List all open tabs (PRD: ID, URL, title, active)."""
+        result = []
+        for tid, tab in self._tabs.items():
+            title = await tab.page.title()
+            result.append({
+                "tab_id": tid,
+                "url": tab.page.url,
+                "title": title,
+                "active": tid == self._active_tab_id,
+            })
+        return result
+
+    # -- CAPTCHA --
 
     async def solve_captcha(self) -> dict[str, Any]:
         """Detect and attempt to solve any CAPTCHA on the page."""
@@ -315,6 +761,8 @@ class StealthEngine:
             "screenshot": result.screenshot_path,
         }
 
+    # -- Status --
+
     async def status(self) -> dict[str, Any]:
         """Return daemon/browser status."""
         return {
@@ -322,4 +770,6 @@ class StealthEngine:
             "headed": self._headed,
             "current_url": self.page.url if self.page else None,
             "current_site": self._current_site,
+            "active_tab": self._active_tab_id,
+            "tab_count": len(self._tabs),
         }
