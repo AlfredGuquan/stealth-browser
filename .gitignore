@@ -5,3 +5,6 @@ __pycache__/
 humanization.log
 *.egg-info/
 dist/
+.DS_Store
+.env
+.ruff_cache/
