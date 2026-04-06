@@ -113,13 +113,19 @@ class StealthEngine:
                 "Install Chrome from https://www.google.com/chrome/"
             )
 
+        chrome_ua = get_chrome_ua()
+
         self.browser = await self.playwright.chromium.launch(
             headless=not headed,
             channel="chrome",
+            # Process-level UA override: covers Service Workers, which ignore
+            # context-level user_agent. Without this, SW navigator.userAgent
+            # leaks "HeadlessChrome" even when context UA is overridden.
+            args=[f"--user-agent={chrome_ua}"],
         )
 
         self.context = await self.browser.new_context(
-            user_agent=get_chrome_ua(),
+            user_agent=chrome_ua,
             viewport={"width": 1920, "height": 1080},
             locale="en-US",
         )
