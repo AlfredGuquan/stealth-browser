@@ -8,13 +8,9 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 
 ## In Progress
 
-- V2 PR 待合并：AlfredGuquan/stealth-browser#1
-- 手动 e2e 验证待做：`open` → `snapshot -i` → `click @e1` → `tab create` → `batch`
-
 ## Pending
 
 - 收集真实小红书滑块截图验证 CAPTCHA 模板匹配精度
-- 更新 stealth-browser skill（SKILL.md）补充 V2 新增命令
 
 ## Backlog
 
@@ -46,3 +42,8 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 - stealth-browser skill 创建 + 可用性验证（显式调用 PASS，Cookie 自动注入 PASS）
 - publish skill 重写（agent-browser CDP → stealth-browser）
 - agent-browser 加入 suppress-plugin-skills hook，不再自动路由
+- V2 PR merged：AlfredGuquan/stealth-browser#1 — 8 feature, 170 unit tests, e2e 7/7, anti-detection 57/57 [2026-04-07]
+- stealth-browser skill 更新：SKILL.md 补充 V2 命令（refs/tab/wait/dialog/batch/nav/select/check）[2026-04-07]
+- E2E fixture 创建 + fresh agent 验证：本地 fixture（表单/dialog/iframe/延迟元素/多页面导航）+ 独立 agent 驱动 7 个验收场景 [2026-04-07]
+- 反检测独立验证：bot.sannysoft.com 57/57 PASS，V2 新增行为（ref 注入/dialog listener/多 tab）未暴露自动化信号 [2026-04-07]
+- E2E 发现并修复 2 个 bug：back/forward bfcache 超时（wait_until commit）、batch get 结果丢失（formatter fallback）[2026-04-07]

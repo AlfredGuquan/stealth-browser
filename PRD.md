@@ -86,91 +86,40 @@ V1 定位：反爬先行，架构留口。专注解决反爬站点的自动化�
 
 V2 目标：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agent-browser 成为唯一浏览器 skill，同时保留反检测优势。
 
-### F6: Snapshot Refs 系统
+*所有 V2 feature（F6-F13）已完成并合并，详见 Archive。*
 
-- 动机: 当前交互需要传完整 CSS selector，脆弱且吃 token。Ref 系统让 agent 用 `click @e3` 替代 `click "div.container > button:nth-child(2)"`，更短、更稳、对 LLM 更自然。这是 token 效率和交互可靠性的根本性改进。
-- 描述: `snapshot -i` 输出时为每个可交互元素分配 ref ID（`@e1` `@e2` ...），daemon 侧维护 ref → element 的映射。所有交互命令（click、fill、select、check）同时接受 ref 和 CSS selector。Ref 在每次 `snapshot -i` 时重新生成，旧 ref 失效；导航后自动失效。
-- 约束: Ref 映射存在 daemon 内存中，不持久化。Ref 本质是对 DOM 快照时刻元素的引用，DOM 变化后可能 stale——命令执行时若 ref 对应元素不存在，返回清晰错误提示重新 snapshot。
-- 验收标准:
-  - `snapshot -i` 输出 `@e1 <button> Submit` 格式
-  - `click @e1` 正确点击对应元素
-  - `fill @e2 "hello"` 正确填写对应输入框
-  - 新 snapshot 后旧 ref 失效，使用旧 ref 返回错误
-  - 导航后使用旧 ref 返回错误
-- 依赖: F5
+---
 
-### F7: Wait 条件
+## Archive
 
-- 动机: 动态页面没有 wait，agent 只能盲等或重试。显式 wait 让 agent 精确等待条件满足后再交互，避免 race condition。
-- 描述: `wait` 命令支持四种模式：`wait element <selector|ref>` 等待元素出现、`wait text <text>` 等待文本出现在页面上、`wait network-idle` 等待网络空闲、`wait <ms>` 显式等待毫秒数。默认超时跟随全局 `--timeout`。
-- 验收标准:
-  - `wait element "button.submit"` 在元素出现后立即返回
-  - `wait text "Success"` 在页面包含文本后返回
-  - `wait network-idle` 在无新请求 500ms 后返回
-  - `wait 2000` 等待 2 秒后返回
-  - 超时返回非零退出码和错误信息
-- 依赖: F1
+### F6: Snapshot Refs 系统 [2026-04-06]
 
-### F8: Dialog 处理
+`data-ref` 属性注入 + `[data-ref="@eN"]` attribute selector 解析。选择这个方案而非 CSS selector 生成，因为 tracer 验证了注入方案最简单且对 LLM 最自然。Ref 映射存 daemon 内存，导航时自动清空。所有交互命令同时接受 `@eN` ref 和 CSS selector。
 
-- 动机: 页面弹 alert/confirm/prompt 时若无处理机制，浏览器事件循环阻塞，整个 session 卡死。
-- 描述: 自动监听 dialog 事件，默认 auto-dismiss 防止阻塞。提供 `dialog accept [text]` 和 `dialog dismiss` 命令让 agent 显式控制。最近一次 dialog 的信息（类型、消息文本）通过 `dialog info` 查询。
-- 验收标准:
-  - 页面弹出 alert 后 session 不卡死，dialog 被自动 dismiss
-  - `dialog accept` 能接受 confirm dialog
-  - `dialog info` 返回最近 dialog 的类型和消息
-- 依赖: F1
+### F7: Wait 条件 [2026-04-06]
 
-### F9: 导航原语
+四种模式：element/text/network-idle/ms。超时跟随全局 `--timeout`。
 
-- 动机: 缺少 back/forward/reload，agent 只能靠 `open` 重新导航，丢失历史栈。
-- 描述: 添加 `back`、`forward`、`reload` 命令，映射到 Playwright 的 `page.go_back()`、`page.go_forward()`、`page.reload()`。导航后自动失效当前 refs。
-- 验收标准:
-  - `back` 回到上一页，`forward` 前进
-  - `reload` 重新加载当前页
-  - 导航后旧 ref 失效
-- 依赖: F1
+### F8: Dialog 处理 [2026-04-06]
 
-### F10: Select / Check
+默认 auto-dismiss OFF（用户必须显式 accept/dismiss，防止静默数据丢失）。这和 agent-browser 默认 auto-dismiss 不同，是有意选择。
 
-- 动机: 下拉框和 checkbox 是表单自动化基本操作，当前 fill/click 覆盖不了。
-- 描述: `select <selector|ref> <value>` 选择下拉选项（by value, label, or index）。`check <selector|ref>` / `uncheck <selector|ref>` 操作 checkbox/radio。行为模拟：select 前 hover + 点击展开，check 前 hover。
-- 验收标准:
-  - `select @e3 "option-value"` 正确选中下拉选项
-  - `check @e5` 勾选 checkbox
-  - `uncheck @e5` 取消勾选
-  - 对已勾选的 checkbox 执行 check 不报错（幂等）
-- 依赖: F6（使用 ref）, F3（行为模拟）
+### F9: 导航原语 [2026-04-06]
 
-### F11: 多 Tab 管理
+back/forward/reload。E2E 发现 bfcache 导致 `wait_until="domcontentloaded"` 超时，改为 `wait_until="commit"`。
 
-- 动机: 对比页面、跨 tab 操作、OAuth 回调窗口都需要 tab 切换。
-- 描述: daemon 内一个 browser context 支持多个 page（tab）。命令：`tab list`（列出所有 tab 及 ID）、`tab create [url]`（新建 tab，可选导航）、`tab switch <id>`（切换活跃 tab）、`tab close [id]`（关闭 tab，默认当前）。daemon 不再绑定单一 site，`open` 按 URL 域名自动注入对应 cookie。切换 tab 后当前 ref 失效。
-- 约束: 所有交互命令作用于当前活跃 tab。Tab ID 为自增整数，从 1 开始。关闭最后一个 tab 不关闭 daemon（保持空 context）。
-- 验收标准:
-  - `tab create https://example.com` 新建 tab 并导航
-  - `tab list` 显示所有 tab（ID、URL、标题、活跃标记）
-  - `tab switch 2` 切换到 tab 2，后续命令作用于 tab 2
-  - `tab close` 关闭当前 tab，自动切到上一个
-- 依赖: F1
+### F10: Select / Check [2026-04-06]
 
-### F12: iframe 支持
+select 支持 by value/label/index。check/uncheck 幂等。
 
-- 动机: 支付框、嵌入编辑器、验证码等核心内容常在 iframe 内，snapshot 看不到 iframe 内容 agent 就是瞎子。
-- 描述: `snapshot -i` 自动检测并内联 iframe 内的可交互元素，ref ID 统一编号（不区分主文档和 iframe）。交互命令通过 ref 自动定位到正确的 frame，agent 无需感知 iframe 边界。对 cross-origin iframe 标注 `[cross-origin]` 但不内联内容（浏览器安全限制）。
-- 验收标准:
-  - 包含 same-origin iframe 的页面，`snapshot -i` 列出 iframe 内元素
-  - `click @e15`（iframe 内元素）正确执行
-  - cross-origin iframe 在 snapshot 中标注但不展开
-- 依赖: F6
+### F11: 多 Tab 管理 [2026-04-06]
 
-### F13: Batch 模式
+单 context 多 page。每 tab 独立 HumanBehavior/CaptchaSolver 实例（tracer 验证 swap 会导致状态泄漏）。Cookie 是 context 级 domain 隔离，多 tab 不需要额外处理。
 
-- 动机: 多命令流程（填 10 个表单字段）每次 CLI 调用有 Python 启动 + socket 连接开销（100-200ms）。Batch 在 daemon 内部执行，去掉进程开销。
-- 描述: `batch` 命令从 stdin 读取 JSON 数组，daemon 内顺序执行。命令间注入 200-800ms 随机停顿模拟人类认知间隙（单独调用时进程启动开销天然提供了这个间隙，batch 去掉了进程开销也去掉了间隙）。`--fast` flag 跳过间隔，用于本地测试等非反检测场景。遇到错误停止执行，返回已成功命令的结果 + 错误命令的信息。
-- 验收标准:
-  - `echo '[{"cmd":"click","ref":"@e1"},{"cmd":"fill","ref":"@e2","text":"hello"}]' | stealth-browser batch` 顺序执行两个命令
-  - 命令间有可观测的随机间隔（200-800ms）
-  - `--fast` 跳过间隔
-  - 第 2 条命令失败时，返回第 1 条的成功结果和第 2 条的错误
-- 依赖: F6（使用 ref）
+### F12: iframe 支持 [2026-04-06]
+
+ref 编号跨所有 frames 使用单一计数器。交互命令通过 ref → frame_index 映射自动定位。cross-origin iframe 标注 `[cross-origin]` 但不注入 ref。
+
+### F13: Batch 模式 [2026-04-06]
+
+命令间注入 200-800ms 随机停顿模拟认知间隙。`--fast` 跳过。E2E 发现 `get` 命令结果在 formatter 中丢失，修复了 fallback chain。
