@@ -1,15 +1,63 @@
 # Stealth Browser
 
-Anti-detection browser automation CLI for AI agents. Python + Patchright + pycookiecheat. uv managed.
+Anti-detection browser automation CLI for AI agents. Python + Patchright + pycookiecheat + humanization-playwright + OpenCV. macOS only.
 
-### Learned Constraints
+## Docs
 
-- Patchright 启动必须用 `channel='chrome'`（系统 Chrome），不用 bundled Chromium -- bundled 版本有 11 项反检测信号暴露（验证：specs/prototype/stealth-browser-findings.md）
-- headless 模式的 UA 仍含 "HeadlessChrome"，必须在 `new_context(user_agent=...)` 显式覆盖
-- pycookiecheat `as_cookies=True` 返回 `pycookiecheat.common.Cookie` dataclass（不是 `http.cookiejar.Cookie`）：`host_key` 非 `domain`，`expires_utc` 非 `expires`（Chrome 微秒时间戳需 `/ 1e6 - 11644473600` 转 Unix 秒），`is_secure` 非 `secure`
-- Patchright sync API 基于 greenlet，不能跨线程调用 -- daemon 必须用 `patchright.async_api` + asyncio 事件循环
-- Cookie 注入用 `context.add_cookies()`，在 `new_context()` 之后、首次 `goto()` 之前
-- PRD 中的 `human-cursor` 不存在。正确的库是 `humanization-playwright`（PyPI），import 路径 `from humanization import Humanization, HumanizationConfig`（验证：specs/prototype/human-behavior-captcha-findings.md）
-- `humanization-playwright` 的 `undetected_launch()` 强制 `headless=False`，不要用。直接 `Humanization(page, config)` 构造，传入自己创建的 Patchright page
-- 滑块 CAPTCHA 拖拽不能用 `Humanization.drag_to()`（只接受两个 Locator）。用 `mouse.down()` + `generate_bezier_points()` + 逐点 `mouse.move()` + `mouse.up()` 手动实现
-- `humanization-playwright` 在 import 时自动创建 `humanization.log` 文件。需要加 `.gitignore` 并在初始化时重定向 loguru handler
+| 文件 | 内容 |
+|------|------|
+| PRINCIPLES.md | 5 条核心原则：效果第一、零介入、完整链路、可靠胜过通用、可观测 |
+| PRD.md | V1 五个 feature（引擎/Cookie/行为模拟/CAPTCHA/CLI）+ 验收标准 |
+| ARCHITECTURE.md | 数据流、模块地图、层级规则 |
+| specs/prototype/ | tracer bullet findings（反检测验证、行为模拟验证） |
+
+## Project Structure
+
+```
+stealth_browser/
+├── cli.py          # CLI 入口，argparse 命令路由
+├── daemon.py       # asyncio daemon（Unix socket），浏览器生命周期管理
+├── engine.py       # Patchright 引擎封装，导航/交互/截图
+├── cookies.py      # Chrome Cookie 提取（pycookiecheat）、缓存、过期检测
+├── behavior.py     # 人类行为模拟 facade（鼠标/打字/滚动/拖拽）
+├── captcha.py      # 滑块 CAPTCHA 检测 + OpenCV 解决
+└── utils.py        # 共享工具（路径、UA 检测、错误输出）
+tests/
+├── unit/           # 单元测试（77 个，mock-based）
+└── test_*.py       # tracer 验证脚本（集成测试，需真实 Chrome）
+```
+
+## Commands
+
+```bash
+uv run stealth-browser open <url>              # 导航（自动注入 Cookie）
+uv run stealth-browser snapshot [-i]           # 页面快照（-i 列出可交互元素）
+uv run stealth-browser click <selector>        # 点击（人类行为模拟）
+uv run stealth-browser fill <selector> <text>  # 填写输入框（变速打字 + 偶发错字）
+uv run stealth-browser type <text>             # 当前焦点位置打字
+uv run stealth-browser eval <js>               # 执行 JavaScript
+uv run stealth-browser screenshot [path]       # 截图
+uv run stealth-browser close                   # 关闭浏览器和 daemon
+uv run python -m pytest tests/unit/ -q         # 运行单元测试
+```
+
+## Git
+
+Conventional commits. 不 `git add -A`，只 stage 当前变更涉及的文件。
+
+<important if="modifying engine.py or daemon.py">
+- 必须用 `patchright.async_api`，不能用 sync API（greenlet 不能跨线程）
+- 浏览器启动必须 `channel='chrome'`（系统 Chrome），headless UA 必须显式覆盖
+- Cookie 注入在 `new_context()` 之后、首次 `goto()` 之前
+</important>
+
+<important if="modifying behavior.py">
+- 不使用 `undetected_launch()`（强制 headed），直接 `Humanization(page, config)` 构造
+- 非 ASCII 字符（中文等）用 `keyboard.insert_text()`，不用 `keyboard.press()`
+- 滑块拖拽用 `generate_bezier_points()` + 手动 mouse 操作，不用 `drag_to()`
+</important>
+
+<important if="modifying cookies.py">
+- pycookiecheat `as_cookies=True` 返回自定义 dataclass：`host_key`（非 `domain`）、`expires_utc`（Chrome 微秒时间戳，需 `/ 1e6 - 11644473600` 转 Unix 秒）、`is_secure`（非 `secure`）
+- site 名必须经过 `_validate_name()` 清洗，防路径遍历
+</important>
