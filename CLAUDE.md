@@ -1,13 +1,13 @@
 # Stealth Browser
 
-Anti-detection browser automation CLI for AI agents. Python + Patchright + pycookiecheat + humanization-playwright + OpenCV. macOS only.
+Universal browser automation CLI for AI agents with anti-detection. Python + Patchright + pycookiecheat + humanization-playwright + OpenCV. macOS only.
 
 ## Docs
 
 | 文件 | 内容 |
 |------|------|
 | PRINCIPLES.md | 5 条核心原则：效果第一、零介入、完整链路、可靠胜过通用、可观测 |
-| PRD.md | V1 五个 feature（引擎/Cookie/行为模拟/CAPTCHA/CLI）+ 验收标准 |
+| PRD.md | V1 五个 feature + V2 八个 feature（refs/wait/dialog/nav/select/tab/iframe/batch）+ 验收标准 |
 | ARCHITECTURE.md | 数据流、模块地图、层级规则 |
 | specs/prototype/ | tracer bullet findings（反检测验证、行为模拟验证） |
 
@@ -23,21 +23,56 @@ stealth_browser/
 ├── captcha.py      # 滑块 CAPTCHA 检测 + OpenCV 解决
 └── utils.py        # 共享工具（路径、UA 检测、错误输出）
 tests/
-├── unit/           # 单元测试（77 个，mock-based）
+├── unit/           # 单元测试（170 个，mock-based）
 └── test_*.py       # tracer 验证脚本（集成测试，需真实 Chrome）
 ```
 
 ## Commands
 
 ```bash
+# 导航
 uv run stealth-browser open <url>              # 导航（自动注入 Cookie）
-uv run stealth-browser snapshot [-i]           # 页面快照（-i 列出可交互元素）
+uv run stealth-browser back                    # 后退
+uv run stealth-browser forward                 # 前进
+uv run stealth-browser reload                  # 重新加载
+
+# 观察
+uv run stealth-browser snapshot [-i]           # 页面快照（-i 列出可交互元素 + @eN refs）
+uv run stealth-browser screenshot [path]       # 截图
+uv run stealth-browser get <text|url|title>    # 获取页面信息
+
+# 交互（接受 @eN ref 或 CSS selector）
 uv run stealth-browser click <selector>        # 点击（人类行为模拟）
 uv run stealth-browser fill <selector> <text>  # 填写输入框（变速打字 + 偶发错字）
 uv run stealth-browser type <text>             # 当前焦点位置打字
+uv run stealth-browser select <selector> <val> # 下拉选择
+uv run stealth-browser check <selector>        # 勾选 checkbox
+uv run stealth-browser uncheck <selector>      # 取消勾选
+
+# 等待
+uv run stealth-browser wait element <sel>      # 等待元素出现
+uv run stealth-browser wait text <text>        # 等待文本出现
+uv run stealth-browser wait network-idle       # 等待网络空闲
+uv run stealth-browser wait <ms>               # 等待毫秒数
+
+# Tab 管理
+uv run stealth-browser tab list                # 列出所有 tab
+uv run stealth-browser tab create [url]        # 新建 tab
+uv run stealth-browser tab switch <id>         # 切换 tab
+uv run stealth-browser tab close [id]          # 关闭 tab
+
+# Dialog
+uv run stealth-browser dialog accept [text]    # 接受 dialog
+uv run stealth-browser dialog dismiss          # 关闭 dialog
+uv run stealth-browser dialog info             # 查看最近 dialog 信息
+uv run stealth-browser dialog auto-dismiss on  # 开启自动关闭
+
+# 高级
 uv run stealth-browser eval <js>               # 执行 JavaScript
-uv run stealth-browser screenshot [path]       # 截图
+uv run stealth-browser batch [--fast]          # 从 stdin 读 JSON 批量执行
 uv run stealth-browser close                   # 关闭浏览器和 daemon
+
+# 测试
 uv run python -m pytest tests/unit/ -q         # 运行单元测试
 ```
 
