@@ -10,6 +10,15 @@ Life cycle:
 - Socket at ~/.stealth-browser/{session}.sock
 
 Must use patchright.async_api (sync API greenlet can't cross threads).
+
+V2 additions:
+- Tab commands: tab_create, tab_close, tab_switch, tab_list
+- Snapshot refs: snapshot with interactive=True now injects data-ref attrs
+- Wait commands: wait_element, wait_text, wait_network_idle, wait_timeout
+- Dialog commands: dialog_accept, dialog_dismiss, dialog_info
+- Navigation: back, forward, reload
+- Select/Check: select, check, uncheck
+- Batch: sequential command execution with cognitive gaps
 """
 
 from __future__ import annotations
@@ -18,6 +27,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import signal
 import sys
 import time
@@ -51,18 +61,16 @@ class DaemonProtocol(asyncio.Protocol):
 
     async def _process(self) -> None:
         try:
-            # C3: Parse headers and body at the byte level to avoid
+            # Parse headers and body at the byte level to avoid
             # multi-byte UTF-8 truncation from Content-Length mismatch.
             header_end = self.buffer.index(b"\r\n\r\n") + 4
             header_bytes = self.buffer[:header_end]
 
-            # Parse content-length from header bytes
             content_length = 0
             for line in header_bytes.decode("ascii", errors="replace").split("\r\n"):
                 if line.lower().startswith("content-length:"):
                     content_length = int(line.split(":", 1)[1].strip())
 
-            # Wait for full body to arrive
             if len(self.buffer) < header_end + content_length:
                 self._processing = False
                 return
@@ -183,8 +191,130 @@ class DaemonHandler:
                 count = await self.engine.inject_cookies(site, url)
                 return {"status": "ok", "message": f"refreshed {count} cookies for {site}"}
 
+            # -- F10: Select/Check --
+
+            elif command == "select":
+                msg = await self.engine.select_option(
+                    body["selector"], body["value"]
+                )
+                return {"status": "ok", "message": msg}
+
+            elif command == "check":
+                msg = await self.engine.check(body["selector"])
+                return {"status": "ok", "message": msg}
+
+            elif command == "uncheck":
+                msg = await self.engine.uncheck(body["selector"])
+                return {"status": "ok", "message": msg}
+
+            # -- F7: Wait --
+
+            elif command == "wait":
+                wait_type = body.get("type", "")
+                timeout = body.get("timeout", 30000)
+
+                if wait_type == "element":
+                    msg = await self.engine.wait_for_element(
+                        body["target"], timeout=timeout
+                    )
+                elif wait_type == "text":
+                    msg = await self.engine.wait_for_text(
+                        body["target"], timeout=timeout
+                    )
+                elif wait_type == "network-idle":
+                    msg = await self.engine.wait_for_network_idle(
+                        timeout=timeout
+                    )
+                elif wait_type == "timeout":
+                    msg = await self.engine.wait_for_timeout(
+                        int(body["target"])
+                    )
+                else:
+                    return {
+                        "status": "error",
+                        "error": f"unknown wait type: {wait_type}",
+                    }
+                return {"status": "ok", "message": msg}
+
+            # -- F8: Dialog --
+
+            elif command == "dialog":
+                action = body.get("action", "info")
+                if action == "accept":
+                    msg = await self.engine.dialog_accept(body.get("text"))
+                    return {"status": "ok", "message": msg}
+                elif action == "dismiss":
+                    msg = await self.engine.dialog_dismiss()
+                    return {"status": "ok", "message": msg}
+                elif action == "info":
+                    info = self.engine.dialog_info()
+                    return {"status": "ok", **info}
+                else:
+                    return {"status": "error", "error": f"unknown dialog action: {action}"}
+
+            # -- F9: Navigation --
+
+            elif command == "back":
+                result = await self.engine.go_back()
+                return {"status": "ok", **result}
+
+            elif command == "forward":
+                result = await self.engine.go_forward()
+                return {"status": "ok", **result}
+
+            elif command == "reload":
+                result = await self.engine.reload()
+                return {"status": "ok", **result}
+
+            # -- F11: Multi-tab --
+
+            elif command == "tab":
+                action = body.get("action", "list")
+                if action == "list":
+                    tabs = self.engine.tab_list()
+                    return {"status": "ok", "tabs": tabs}
+                elif action == "create":
+                    result = await self.engine.tab_create(body.get("url"))
+                    return {"status": "ok", **result}
+                elif action == "switch":
+                    msg = self.engine.tab_switch(body["tab_id"])
+                    return {"status": "ok", "message": msg}
+                elif action == "close":
+                    msg = await self.engine.tab_close(body.get("tab_id"))
+                    return {"status": "ok", "message": msg}
+                else:
+                    return {"status": "error", "error": f"unknown tab action: {action}"}
+
+            # -- F13: Batch --
+
+            elif command == "batch":
+                commands = body.get("commands", [])
+                fast = body.get("fast", False)
+                results = []
+                for i, cmd in enumerate(commands):
+                    try:
+                        result = await self.handle(cmd)
+                        results.append(result)
+                        if result.get("status") == "error":
+                            return {
+                                "status": "error",
+                                "error": f"command {i} failed: {result.get('error')}",
+                                "completed": results,
+                                "failed_index": i,
+                            }
+                    except Exception as e:
+                        return {
+                            "status": "error",
+                            "error": f"command {i} failed: {e}",
+                            "completed": results,
+                            "failed_index": i,
+                        }
+                    # Cognitive gap between commands (unless --fast)
+                    if not fast and i < len(commands) - 1:
+                        await asyncio.sleep(random.uniform(0.2, 0.8))
+                return {"status": "ok", "results": results}
+
             elif command == "close":
-                # Schedule shutdown after sending response
                 asyncio.get_event_loop().call_soon(self._schedule_shutdown)
                 return {"status": "ok", "message": "shutting down"}
 
@@ -231,12 +361,10 @@ async def _run_daemon(session: str, headed: bool) -> None:
     server = await loop.create_unix_server(
         lambda: DaemonProtocol(handler), path=str(sock)
     )
-    # Make socket accessible
     sock.chmod(0o600)
 
     logger.info(f"daemon listening on {sock}")
 
-    # Idle timeout checker
     async def idle_checker() -> None:
         while True:
             await asyncio.sleep(60)
@@ -249,7 +377,6 @@ async def _run_daemon(session: str, headed: bool) -> None:
 
     asyncio.ensure_future(idle_checker())
 
-    # Handle signals
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(
             sig,
@@ -275,53 +402,40 @@ async def _signal_handler(
 
 
 def start_daemon(session: str, headed: bool = False) -> None:
-    """Fork a daemon process and return immediately in the parent.
-
-    The child process runs the asyncio event loop with the browser engine.
-    """
+    """Fork a daemon process and return immediately in the parent."""
     ensure_dirs()
     sock = socket_path(session)
     pid_file = pid_path(session)
 
-    # Check if daemon is already running
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)  # Check if process exists
+            os.kill(pid, 0)
             return  # Already running
         except (ProcessLookupError, ValueError):
-            # Stale PID file, clean up
             pid_file.unlink(missing_ok=True)
             sock.unlink(missing_ok=True)
 
-    # Fork
     pid = os.fork()
     if pid > 0:
-        # Parent: wait briefly for daemon to start, then return
         _wait_for_socket(session, timeout=15.0)
         return
 
-    # Child: become session leader (detach from terminal)
     os.setsid()
 
-    # Second fork to fully daemonize
     pid2 = os.fork()
     if pid2 > 0:
         os._exit(0)
 
-    # Grandchild: the actual daemon process
-    # Redirect stdio properly via fd-level dup2
     devnull_fd = os.open(os.devnull, os.O_RDWR)
-    os.dup2(devnull_fd, 0)  # stdin
-    os.dup2(devnull_fd, 1)  # stdout
-    os.dup2(devnull_fd, 2)  # stderr
+    os.dup2(devnull_fd, 0)
+    os.dup2(devnull_fd, 1)
+    os.dup2(devnull_fd, 2)
     os.close(devnull_fd)
 
-    # Write PID file
     pid_file.write_text(str(os.getpid()))
     pid_file.chmod(0o600)
 
-    # Configure logging to file
     log_file = socket_path(session).with_suffix(".log")
     logging.basicConfig(
         filename=str(log_file),
@@ -329,7 +443,6 @@ def start_daemon(session: str, headed: bool = False) -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    # Run the daemon
     asyncio.run(_run_daemon(session, headed))
     sys.exit(0)
 
@@ -342,7 +455,6 @@ def _wait_for_socket(session: str, timeout: float = 15.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if sock.exists():
-            # Try a ping to confirm it's responsive
             try:
                 send_command(session, "ping")
                 return
@@ -353,10 +465,7 @@ def _wait_for_socket(session: str, timeout: float = 15.0) -> None:
 
 
 def send_command(session: str, command: str, **kwargs: Any) -> dict[str, Any]:
-    """Send a command to the daemon over Unix socket and return the response.
-
-    This is a synchronous call used by the CLI process.
-    """
+    """Send a command to the daemon over Unix socket and return the response."""
     import http.client
     import socket as socket_module
 
@@ -366,9 +475,7 @@ def send_command(session: str, command: str, **kwargs: Any) -> dict[str, Any]:
 
     payload = json.dumps({"command": command, **kwargs})
 
-    # HTTP over Unix socket
     conn = http.client.HTTPConnection("localhost")
-    # Replace the socket factory to use Unix domain socket
     s = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
     s.settimeout(60)
     s.connect(str(sock))
@@ -396,7 +503,6 @@ def is_daemon_running(session: str) -> bool:
         os.kill(pid, 0)
         return True
     except (ProcessLookupError, ValueError):
-        # Clean up stale files
         pf.unlink(missing_ok=True)
         socket_path(session).unlink(missing_ok=True)
         return False

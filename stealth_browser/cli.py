@@ -4,12 +4,23 @@ Designed for AI agent consumption: plain text to stdout, errors to stderr,
 non-zero exit codes on failure.
 
 Invoked as `stealth-browser <command> [args]` or `python -m stealth_browser <command>`.
+
+V2 additions:
+- tab list/create/switch/close (F11)
+- wait element/text/network-idle/<ms> (F7)
+- dialog accept/dismiss/info (F8)
+- back, forward, reload (F9)
+- select, check, uncheck (F10)
+- batch (F13)
+- Snapshot refs: click/fill/select/check accept @eN refs (F6)
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from typing import Any
 from urllib.parse import urlparse
 
 from .daemon import is_daemon_running, send_command, start_daemon
@@ -20,7 +31,6 @@ def _site_from_url(url: str) -> str:
     """Extract a site name from a URL for session/cache partitioning."""
     parsed = urlparse(url)
     host = parsed.hostname or ""
-    # Strip www. and use the domain as-is
     if host.startswith("www."):
         host = host[4:]
     return host
@@ -56,7 +66,7 @@ def cmd_open(args: argparse.Namespace) -> None:
         url = f"https://{url}"
 
     site = args.site or _site_from_url(url)
-    session = site  # One session per site
+    session = site
 
     _ensure_daemon(session, args.headed)
     result = _send(session, "open", url=url, site=site, timeout=args.timeout)
@@ -136,7 +146,7 @@ def cmd_close(args: argparse.Namespace) -> None:
     try:
         _send(session, "close")
     except SystemExit:
-        pass  # Daemon shuts down, connection may reset
+        pass
     print("browser closed")
 
 
@@ -162,13 +172,181 @@ def cmd_status(args: argparse.Namespace) -> None:
         print(f"url: {result['current_url']}")
     if result.get("current_site"):
         print(f"site: {result['current_site']}")
+    print(f"active tab: {result.get('active_tab', 0)}")
+    print(f"tab count: {result.get('tab_count', 1)}")
+
+
+# -- F10: Select/Check --
+
+def cmd_select(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+    result = _send(session, "select", selector=args.selector, value=args.value)
+    print(result["message"])
+
+
+def cmd_check(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+    result = _send(session, "check", selector=args.selector)
+    print(result["message"])
+
+
+def cmd_uncheck(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+    result = _send(session, "uncheck", selector=args.selector)
+    print(result["message"])
+
+
+# -- F7: Wait --
+
+def cmd_wait(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+    wait_type = args.wait_type
+    target = args.target
+    timeout = args.timeout
+
+    if wait_type == "network-idle":
+        result = _send(session, "wait", type="network-idle", target="", timeout=timeout)
+    elif wait_type.isdigit():
+        # `wait 5000` -- wait for N ms
+        result = _send(session, "wait", type="timeout", target=wait_type)
+    else:
+        # wait element <selector|ref> or wait text <text>
+        result = _send(
+            session, "wait", type=wait_type, target=target, timeout=timeout
+        )
+    print(result["message"])
+
+
+# -- F8: Dialog --
+
+def cmd_dialog(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+    action = args.dialog_action
+
+    if action == "accept":
+        text = getattr(args, "text", None)
+        kwargs = {"action": "accept"}
+        if text:
+            kwargs["text"] = text
+        result = _send(session, "dialog", **kwargs)
+        print(result["message"])
+    elif action == "dismiss":
+        result = _send(session, "dialog", action="dismiss")
+        print(result["message"])
+    elif action == "info":
+        result = _send(session, "dialog", action="info")
+        if result.get("present"):
+            print(f"type: {result['type']}")
+            print(f"message: {result['message']}")
+            if result.get("default_value"):
+                print(f"default: {result['default_value']}")
+            print(f"handled: {result['handled']}")
+        else:
+            print("no dialog present")
+    else:
+        error(f"unknown dialog action: {action}")
+
+
+# -- F9: Navigation --
+
+def cmd_back(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+    result = _send(session, "back")
+    print(f"URL: {result['url']}")
+    print(f"Title: {result['title']}")
+
+
+def cmd_forward(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+    result = _send(session, "forward")
+    print(f"URL: {result['url']}")
+    print(f"Title: {result['title']}")
+
+
+def cmd_reload(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+    result = _send(session, "reload")
+    print(f"URL: {result['url']}")
+    print(f"Title: {result['title']}")
+
+
+# -- F11: Multi-tab --
+
+def cmd_tab(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+    action = args.tab_action
+
+    if action == "list":
+        result = _send(session, "tab", action="list")
+        for tab in result["tabs"]:
+            marker = "*" if tab["active"] else " "
+            print(f"  {marker} [{tab['tab_id']}] {tab['url']}")
+
+    elif action == "create":
+        url = getattr(args, "url", None)
+        kwargs: dict[str, Any] = {"action": "create"}
+        if url:
+            kwargs["url"] = url
+        result = _send(session, "tab", **kwargs)
+        print(f"tab {result['tab_id']} created")
+        if result.get("url"):
+            print(f"URL: {result['url']}")
+
+    elif action == "switch":
+        tab_id = args.tab_id
+        result = _send(session, "tab", action="switch", tab_id=tab_id)
+        print(result["message"])
+
+    elif action == "close":
+        tab_id = getattr(args, "tab_id", None)
+        kwargs = {"action": "close"}
+        if tab_id is not None:
+            kwargs["tab_id"] = tab_id
+        result = _send(session, "tab", **kwargs)
+        print(result["message"])
+
+    else:
+        error(f"unknown tab action: {action}")
+
+
+# -- F13: Batch --
+
+def cmd_batch(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+
+    # Read commands from stdin
+    raw = sys.stdin.read()
+    try:
+        commands = json.loads(raw)
+    except json.JSONDecodeError as e:
+        error(f"invalid JSON from stdin: {e}")
+
+    if not isinstance(commands, list):
+        error("batch expects a JSON array of command objects")
+
+    result = _send(session, "batch", commands=commands, fast=args.fast)
+
+    if result["status"] == "ok":
+        print(f"batch: {len(result['results'])} commands completed")
+        for i, r in enumerate(result["results"]):
+            status = r.get("status", "?")
+            msg = r.get("message", r.get("content", r.get("path", "")))
+            print(f"  [{i}] {status}: {msg}")
+    else:
+        completed = result.get("completed", [])
+        print(
+            f"batch: failed at command {result.get('failed_index', '?')}: "
+            f"{result.get('error', 'unknown')}",
+            file=sys.stderr,
+        )
+        print(f"  {len(completed)} commands completed before failure")
+        sys.exit(1)
 
 
 def _get_session(args: argparse.Namespace) -> str:
     """Determine which session/daemon to talk to."""
     if hasattr(args, "site") and args.site:
         return args.site
-    # Try to find any running session
     from .utils import STATE_DIR
     if STATE_DIR.exists():
         for f in STATE_DIR.glob("*.pid"):
@@ -204,16 +382,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_snap = sub.add_parser("snapshot", help="Page text snapshot")
     p_snap.add_argument(
         "-i", "--interactive", action="store_true",
-        help="Show interactive elements with indices"
+        help="Show interactive elements with @eN refs"
     )
 
-    # click
-    p_click = sub.add_parser("click", help="Click an element")
-    p_click.add_argument("selector", help="CSS selector")
+    # click (accepts @eN ref or CSS selector)
+    p_click = sub.add_parser("click", help="Click an element (@eN ref or CSS selector)")
+    p_click.add_argument("selector", help="@eN ref or CSS selector")
 
-    # fill
+    # fill (accepts @eN ref or CSS selector)
     p_fill = sub.add_parser("fill", help="Fill an input field")
-    p_fill.add_argument("selector", help="CSS selector for the input")
+    p_fill.add_argument("selector", help="@eN ref or CSS selector for the input")
     p_fill.add_argument("text", help="Text to type")
 
     # type
@@ -231,7 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # upload
     p_upload = sub.add_parser("upload", help="Upload a file")
-    p_upload.add_argument("selector", help="CSS selector for file input")
+    p_upload.add_argument("selector", help="@eN ref or CSS selector for file input")
     p_upload.add_argument("file", help="Path to file")
 
     # screenshot
@@ -259,6 +437,65 @@ def build_parser() -> argparse.ArgumentParser:
 
     # status
     sub.add_parser("status", help="Show daemon status")
+
+    # -- F10: Select/Check --
+
+    p_select = sub.add_parser("select", help="Select an option from a <select> element")
+    p_select.add_argument("selector", help="@eN ref or CSS selector")
+    p_select.add_argument("value", help="Value to select")
+
+    p_check = sub.add_parser("check", help="Check a checkbox or radio button")
+    p_check.add_argument("selector", help="@eN ref or CSS selector")
+
+    p_uncheck = sub.add_parser("uncheck", help="Uncheck a checkbox")
+    p_uncheck.add_argument("selector", help="@eN ref or CSS selector")
+
+    # -- F7: Wait --
+
+    p_wait = sub.add_parser("wait", help="Wait for condition")
+    p_wait.add_argument(
+        "wait_type",
+        help="element, text, network-idle, or milliseconds (e.g. 5000)"
+    )
+    p_wait.add_argument(
+        "target", nargs="?", default="",
+        help="@eN ref/CSS selector (for element) or text string (for text)"
+    )
+
+    # -- F8: Dialog --
+
+    p_dialog = sub.add_parser("dialog", help="Handle browser dialogs (alert/confirm/prompt)")
+    dialog_sub = p_dialog.add_subparsers(dest="dialog_action")
+    p_dialog_accept = dialog_sub.add_parser("accept", help="Accept the dialog")
+    p_dialog_accept.add_argument("text", nargs="?", default=None, help="Text for prompt dialog")
+    dialog_sub.add_parser("dismiss", help="Dismiss the dialog")
+    dialog_sub.add_parser("info", help="Show dialog info")
+
+    # -- F9: Navigation --
+
+    sub.add_parser("back", help="Navigate back")
+    sub.add_parser("forward", help="Navigate forward")
+    sub.add_parser("reload", help="Reload current page")
+
+    # -- F11: Multi-tab --
+
+    p_tab = sub.add_parser("tab", help="Tab management")
+    tab_sub = p_tab.add_subparsers(dest="tab_action")
+    tab_sub.add_parser("list", help="List open tabs")
+    p_tab_create = tab_sub.add_parser("create", help="Create a new tab")
+    p_tab_create.add_argument("url", nargs="?", default=None, help="URL to open in new tab")
+    p_tab_switch = tab_sub.add_parser("switch", help="Switch to a tab")
+    p_tab_switch.add_argument("tab_id", type=int, help="Tab ID to switch to")
+    p_tab_close = tab_sub.add_parser("close", help="Close a tab")
+    p_tab_close.add_argument("tab_id", nargs="?", type=int, default=None, help="Tab ID (default: active)")
+
+    # -- F13: Batch --
+
+    p_batch = sub.add_parser("batch", help="Execute commands from stdin JSON array")
+    p_batch.add_argument(
+        "--fast", action="store_true",
+        help="Skip cognitive gap delays between commands"
+    )
 
     return parser
 
@@ -289,6 +526,17 @@ def main(argv: list[str] | None = None) -> None:
         "close": cmd_close,
         "cookie": cmd_cookie_refresh,
         "status": cmd_status,
+        # V2
+        "select": cmd_select,
+        "check": cmd_check,
+        "uncheck": cmd_uncheck,
+        "wait": cmd_wait,
+        "dialog": cmd_dialog,
+        "back": cmd_back,
+        "forward": cmd_forward,
+        "reload": cmd_reload,
+        "tab": cmd_tab,
+        "batch": cmd_batch,
     }
 
     handler = commands.get(args.command)
