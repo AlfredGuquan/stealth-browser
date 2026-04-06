@@ -366,7 +366,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
         print(f"batch: {len(result['results'])} commands completed")
         for i, r in enumerate(result["results"]):
             status = r.get("status", "?")
-            msg = r.get("message", r.get("content", r.get("path", "")))
+            msg = r.get("message", r.get("content", r.get("value", r.get("path", ""))))
             print(f"  [{i}] {status}: {msg}")
     else:
         completed = result.get("completed", [])

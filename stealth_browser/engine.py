@@ -254,7 +254,8 @@ class StealthEngine:
         """Navigate back (F9)."""
         if self.page is None:
             raise RuntimeError("browser not launched")
-        await self.page.go_back(wait_until="domcontentloaded")
+        await self.page.go_back(wait_until="commit")
+        await self.page.wait_for_timeout(1000)
         self._clear_refs()
         return {"url": self.page.url, "title": await self.page.title()}
 
@@ -262,7 +263,8 @@ class StealthEngine:
         """Navigate forward (F9)."""
         if self.page is None:
             raise RuntimeError("browser not launched")
-        await self.page.go_forward(wait_until="domcontentloaded")
+        await self.page.go_forward(wait_until="commit")
+        await self.page.wait_for_timeout(1000)
         self._clear_refs()
         return {"url": self.page.url, "title": await self.page.title()}
 
