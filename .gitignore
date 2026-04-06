@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 *.log
+humanization.log
+*.egg-info/
+dist/

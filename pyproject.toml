@@ -4,9 +4,23 @@ version = "0.1.0"
 description = "Anti-detection browser automation CLI for AI agents"
 requires-python = ">=3.11"
 dependencies = [
+    "cryptography>=43.0.0",
     "humanization-playwright>=0.1.2",
     "numpy>=2.4.4",
     "opencv-python-headless>=4.13.0.92",
     "patchright>=1.58.2",
     "pycookiecheat>=0.8.0",
+]
+
+[project.scripts]
+stealth-browser = "stealth_browser.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
 ]
