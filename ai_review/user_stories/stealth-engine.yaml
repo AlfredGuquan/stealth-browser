@@ -1,0 +1,22 @@
+metadata:
+  feature: "stealth-engine"
+  description: "F1: 反检测浏览器引擎 — Patchright + daemon 架构"
+  generated_at: "2026-04-06T16:30:00+08:00"
+
+stories:
+  - name: "daemon 启动与复用"
+    acceptance_criteria:
+      - "首次执行 CLI 命令时 daemon 自动启动，后续命令复用同一浏览器实例"
+      - "daemon 进程意外退出后，下次命令自动重启"
+      - "空闲超时后 daemon 自动关闭"
+
+  - name: "反检测指纹验证"
+    acceptance_criteria:
+      - "headless 模式下 navigator.webdriver 返回 false"
+      - "creepjs.com 检测页面不标记为自动化浏览器"
+      - "不泄漏 Runtime.enable 相关的 CDP 信号"
+
+  - name: "headed 调试模式"
+    acceptance_criteria:
+      - "传入 --headed 参数时浏览器窗口可见"
+      - "headed 和 headless 模式下反检测效果一致"
