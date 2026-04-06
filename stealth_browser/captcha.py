@@ -326,6 +326,10 @@ class CaptchaSolver:
 
     async def _save_failure_screenshot(self) -> str:
         """Save a full-page screenshot for failed CAPTCHA diagnosis."""
-        path = tempfile.mktemp(prefix="captcha-fail-", suffix=".png", dir="/tmp")
+        f = tempfile.NamedTemporaryFile(
+            delete=False, prefix="captcha-fail-", suffix=".png", dir="/tmp"
+        )
+        path = f.name
+        f.close()
         await self.page.screenshot(path=path, full_page=True)
         return path

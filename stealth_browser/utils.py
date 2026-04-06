@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 # Base directory for all stealth-browser state files
 STATE_DIR = Path.home() / ".stealth-browser"
@@ -70,7 +71,7 @@ def is_login_redirect(url: str) -> bool:
     return bool(LOGIN_PATTERNS.search(url))
 
 
-def error(msg: str, exit_code: int = 1) -> None:
+def error(msg: str, exit_code: int = 1) -> NoReturn:
     """Print error to stderr and exit."""
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(exit_code)
@@ -81,11 +82,26 @@ def warn(msg: str) -> None:
     print(f"warning: {msg}", file=sys.stderr)
 
 
+_SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+
+def _validate_name(name: str) -> str:
+    """Validate that a name contains only safe characters.
+
+    Prevents path traversal via crafted session/site names like '../../etc/foo'.
+    """
+    if not name or not _SAFE_NAME_RE.match(name):
+        raise ValueError(
+            f"invalid name {name!r}: must match [a-zA-Z0-9._-]"
+        )
+    return name
+
+
 def socket_path(session: str) -> Path:
     """Return the Unix domain socket path for a session."""
-    return STATE_DIR / f"{session}.sock"
+    return STATE_DIR / f"{_validate_name(session)}.sock"
 
 
 def pid_path(session: str) -> Path:
     """Return the PID file path for a session."""
-    return STATE_DIR / f"{session}.pid"
+    return STATE_DIR / f"{_validate_name(session)}.pid"

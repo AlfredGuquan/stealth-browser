@@ -174,7 +174,6 @@ def _get_session(args: argparse.Namespace) -> str:
         for f in STATE_DIR.glob("*.pid"):
             return f.stem
     error("no active session. Run 'stealth-browser open <url>' first.")
-    return ""  # unreachable
 
 
 def build_parser() -> argparse.ArgumentParser:

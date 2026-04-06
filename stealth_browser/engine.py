@@ -266,7 +266,11 @@ class StealthEngine:
             raise RuntimeError("browser not launched")
         if path is None:
             import tempfile
-            path = tempfile.mktemp(prefix="stealth-", suffix=".png", dir="/tmp")
+            f = tempfile.NamedTemporaryFile(
+                delete=False, prefix="stealth-", suffix=".png", dir="/tmp"
+            )
+            path = f.name
+            f.close()
         await self.page.screenshot(path=path, full_page=True)
         return path
 

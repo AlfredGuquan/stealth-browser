@@ -23,7 +23,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet
 
-from .utils import SESSIONS_DIR, STATE_DIR, ensure_dirs, warn
+from .utils import SESSIONS_DIR, STATE_DIR, _validate_name, ensure_dirs, warn
 
 # Cache validity: 24 hours by default
 CACHE_TTL_SECONDS = 86400
@@ -63,7 +63,7 @@ def _decrypt(data: bytes) -> str:
 
 
 def _cache_path(site: str) -> Path:
-    return SESSIONS_DIR / f"{site}.json"
+    return SESSIONS_DIR / f"{_validate_name(site)}.json"
 
 
 def _convert_pycookiecheat_to_playwright(

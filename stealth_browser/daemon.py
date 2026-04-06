@@ -38,27 +38,37 @@ class DaemonProtocol(asyncio.Protocol):
         self.handler = handler
         self.transport: asyncio.Transport | None = None
         self.buffer = b""
+        self._processing = False
 
     def connection_made(self, transport: asyncio.Transport) -> None:
         self.transport = transport
 
     def data_received(self, data: bytes) -> None:
         self.buffer += data
-        if b"\r\n\r\n" in self.buffer:
+        if not self._processing and b"\r\n\r\n" in self.buffer:
+            self._processing = True
             asyncio.ensure_future(self._process())
 
     async def _process(self) -> None:
         try:
-            raw = self.buffer.decode("utf-8", errors="replace")
+            # C3: Parse headers and body at the byte level to avoid
+            # multi-byte UTF-8 truncation from Content-Length mismatch.
+            header_end = self.buffer.index(b"\r\n\r\n") + 4
+            header_bytes = self.buffer[:header_end]
 
-            # Parse content-length
+            # Parse content-length from header bytes
             content_length = 0
-            for line in raw.split("\r\n"):
+            for line in header_bytes.decode("ascii", errors="replace").split("\r\n"):
                 if line.lower().startswith("content-length:"):
                     content_length = int(line.split(":", 1)[1].strip())
 
-            header_end = raw.index("\r\n\r\n") + 4
-            body_str = raw[header_end: header_end + content_length]
+            # Wait for full body to arrive
+            if len(self.buffer) < header_end + content_length:
+                self._processing = False
+                return
+
+            body_bytes = self.buffer[header_end: header_end + content_length]
+            body_str = body_bytes.decode("utf-8")
             body = json.loads(body_str) if body_str.strip() else {}
 
             result = await self.handler.handle(body)
@@ -195,7 +205,7 @@ class DaemonHandler:
         await asyncio.sleep(0.1)  # Let the response flush
         await self.engine.shutdown()
         _cleanup_files(self.session)
-        os._exit(0)
+        asyncio.get_event_loop().stop()
 
 
 def _cleanup_files(session: str) -> None:
@@ -235,7 +245,7 @@ async def _run_daemon(session: str, headed: bool) -> None:
                 await engine.shutdown()
                 _cleanup_files(session)
                 server.close()
-                os._exit(0)
+                loop.stop()
 
     asyncio.ensure_future(idle_checker())
 
@@ -261,7 +271,7 @@ async def _signal_handler(
     await engine.shutdown()
     _cleanup_files(session)
     server.close()
-    os._exit(0)
+    asyncio.get_event_loop().stop()
 
 
 def start_daemon(session: str, headed: bool = False) -> None:
@@ -300,11 +310,12 @@ def start_daemon(session: str, headed: bool = False) -> None:
         os._exit(0)
 
     # Grandchild: the actual daemon process
-    # Redirect stdio
-    sys.stdin.close()
-    devnull = open(os.devnull, "w")
-    sys.stdout = devnull
-    sys.stderr = devnull
+    # Redirect stdio properly via fd-level dup2
+    devnull_fd = os.open(os.devnull, os.O_RDWR)
+    os.dup2(devnull_fd, 0)  # stdin
+    os.dup2(devnull_fd, 1)  # stdout
+    os.dup2(devnull_fd, 2)  # stderr
+    os.close(devnull_fd)
 
     # Write PID file
     pid_file.write_text(str(os.getpid()))
@@ -320,7 +331,7 @@ def start_daemon(session: str, headed: bool = False) -> None:
 
     # Run the daemon
     asyncio.run(_run_daemon(session, headed))
-    os._exit(0)
+    sys.exit(0)
 
 
 def _wait_for_socket(session: str, timeout: float = 15.0) -> None:

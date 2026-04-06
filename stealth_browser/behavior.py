@@ -79,8 +79,8 @@ class HumanBehavior:
         typo_rate = random.uniform(0.03, 0.08)
 
         for i, char in enumerate(text):
-            # Decide if this character gets a typo
-            if random.random() < typo_rate and char not in ("\n", "\t"):
+            # Decide if this character gets a typo (only for ASCII letters)
+            if random.random() < typo_rate and char.isascii() and char.isalpha():
                 # Type a wrong character first
                 wrong = random.choice(
                     string.ascii_lowercase.replace(char.lower(), "")
@@ -112,7 +112,7 @@ class HumanBehavior:
         typo_rate = random.uniform(0.03, 0.08)
 
         for char in text:
-            if random.random() < typo_rate and char not in ("\n", "\t"):
+            if random.random() < typo_rate and char.isascii() and char.isalpha():
                 wrong = random.choice(
                     string.ascii_lowercase.replace(char.lower(), "")
                 )
