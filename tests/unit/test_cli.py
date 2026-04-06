@@ -190,6 +190,23 @@ class TestWaitParser:
 class TestDialogParser:
     """F8: dialog command parser tests."""
 
+    def test_dialog_no_subcommand(self):
+        """dialog with no subcommand should have dialog_action=None."""
+        parser = build_parser()
+        args = parser.parse_args(["dialog"])
+        assert args.dialog_action is None
+
+    def test_dialog_auto_dismiss(self):
+        parser = build_parser()
+        args = parser.parse_args(["dialog", "auto-dismiss"])
+        assert args.dialog_action == "auto-dismiss"
+        assert args.mode == "on"
+
+    def test_dialog_auto_dismiss_off(self):
+        parser = build_parser()
+        args = parser.parse_args(["dialog", "auto-dismiss", "off"])
+        assert args.mode == "off"
+
     def test_dialog_accept(self):
         parser = build_parser()
         args = parser.parse_args(["dialog", "accept"])
@@ -234,6 +251,12 @@ class TestNavigationParser:
 
 class TestTabParser:
     """F11: tab subcommand parser tests."""
+
+    def test_tab_no_subcommand(self):
+        """tab with no subcommand should have tab_action=None."""
+        parser = build_parser()
+        args = parser.parse_args(["tab"])
+        assert args.tab_action is None
 
     def test_tab_list(self):
         parser = build_parser()

@@ -63,16 +63,17 @@ class StealthEngine:
         # Multi-tab state (F11)
         self._tabs: dict[int, TabInfo] = {}
         self._active_tab_id: int = 0
-        self._next_tab_id: int = 0
+        self._next_tab_id: int = 1  # PRD: tab IDs start at 1
 
         # Snapshot refs state (F6/F12)
         self._ref_map: dict[str, dict[str, Any]] = {}
         # Maps ref -> {frame_index: int, tag: str, text: str}
 
         # Dialog state (F8)
+        self._pending_dialog: Dialog | None = None
         self._last_dialog: Dialog | None = None
         self._dialog_handled: bool = True
-        self._auto_dismiss_dialogs: bool = True
+        self._auto_dismiss_dialogs: bool = False  # Default off: let user handle dialogs
 
         self._current_site: str | None = None
         self._headed: bool = False
@@ -81,6 +82,10 @@ class StealthEngine:
 
     @property
     def page(self) -> Page | None:
+        if not self._tabs:
+            if self.browser is not None:
+                raise RuntimeError("no active tab -- create one with 'tab create'")
+            return None
         tab = self._tabs.get(self._active_tab_id)
         return tab.page if tab else None
 
@@ -134,13 +139,23 @@ class StealthEngine:
         return tab_id
 
     def _setup_dialog_handler(self, page: Page) -> None:
-        """Attach dialog handler to a page (F8)."""
+        """Attach dialog handler to a page (F8).
+
+        When auto-dismiss is off (default), the dialog is stored in
+        _pending_dialog for explicit accept/dismiss via CLI.
+        When auto-dismiss is on, the dialog is dismissed immediately
+        and only logged.
+        """
         async def _on_dialog(dialog: Dialog) -> None:
             self._last_dialog = dialog
-            self._dialog_handled = False
             if self._auto_dismiss_dialogs:
                 await dialog.dismiss()
                 self._dialog_handled = True
+                self._pending_dialog = None
+                logger.info("auto-dismissed %s dialog: %s", dialog.type, dialog.message)
+            else:
+                self._pending_dialog = dialog
+                self._dialog_handled = False
 
         page.on("dialog", _on_dialog)
 
@@ -280,12 +295,15 @@ class StealthEngine:
             return f'[data-ref="{selector}"]', ref_info["frame_index"]
         return selector, 0  # CSS selector, main frame
 
-    async def _get_locator(self, selector: str):
-        """Get a Playwright locator for a selector (ref or CSS), handling iframes."""
+    async def _get_locator(self, selector: str, *, _resolved: tuple[str, int] | None = None):
+        """Get a Playwright locator for a selector (ref or CSS), handling iframes.
+
+        If _resolved is provided, skip resolve_selector (avoids double resolve).
+        """
         if self.page is None:
             raise RuntimeError("browser not launched")
 
-        css, frame_index = self._resolve_selector(selector)
+        css, frame_index = _resolved if _resolved else self._resolve_selector(selector)
 
         if frame_index == 0:
             return self.page.locator(css)
@@ -542,14 +560,13 @@ class StealthEngine:
         if self.page is None:
             raise RuntimeError("browser not launched")
 
-        locator = await self._get_locator(selector)
+        resolved = self._resolve_selector(selector)
+        css, frame_index = resolved
+        locator = await self._get_locator(selector, _resolved=resolved)
 
-        # Human-like: hover first
-        if self.behavior:
-            css, frame_index = self._resolve_selector(selector)
-            if frame_index == 0:
-                await self.behavior.page.locator(css).hover()
-                await asyncio.sleep(0.1)
+        # Human-like: hover first (works for both main frame and iframes)
+        await locator.hover()
+        await asyncio.sleep(0.1)
 
         await locator.select_option(value)
         return f"selected '{value}' on {selector}"
@@ -559,13 +576,12 @@ class StealthEngine:
         if self.page is None:
             raise RuntimeError("browser not launched")
 
-        locator = await self._get_locator(selector)
+        resolved = self._resolve_selector(selector)
+        locator = await self._get_locator(selector, _resolved=resolved)
 
-        if self.behavior:
-            css, frame_index = self._resolve_selector(selector)
-            if frame_index == 0:
-                await self.behavior.page.locator(css).hover()
-                await asyncio.sleep(0.1)
+        # Human-like: hover first (works for both main frame and iframes)
+        await locator.hover()
+        await asyncio.sleep(0.1)
 
         await locator.check()
         return f"checked {selector}"
@@ -575,13 +591,12 @@ class StealthEngine:
         if self.page is None:
             raise RuntimeError("browser not launched")
 
-        locator = await self._get_locator(selector)
+        resolved = self._resolve_selector(selector)
+        locator = await self._get_locator(selector, _resolved=resolved)
 
-        if self.behavior:
-            css, frame_index = self._resolve_selector(selector)
-            if frame_index == 0:
-                await self.behavior.page.locator(css).hover()
-                await asyncio.sleep(0.1)
+        # Human-like: hover first (works for both main frame and iframes)
+        await locator.hover()
+        await asyncio.sleep(0.1)
 
         await locator.uncheck()
         return f"unchecked {selector}"
@@ -624,37 +639,50 @@ class StealthEngine:
     # -- Dialog (F8) --
 
     async def dialog_accept(self, text: str | None = None) -> str:
-        """Accept the current dialog (F8)."""
-        if self._last_dialog is None:
+        """Accept the pending dialog (F8)."""
+        if self._pending_dialog is None:
             return "no dialog present"
-        if not self._dialog_handled:
-            if text is not None:
-                await self._last_dialog.accept(text)
-            else:
-                await self._last_dialog.accept()
-            self._dialog_handled = True
-        return f"dialog accepted"
+        if text is not None:
+            await self._pending_dialog.accept(text)
+        else:
+            await self._pending_dialog.accept()
+        self._dialog_handled = True
+        self._pending_dialog = None
+        return "dialog accepted"
 
     async def dialog_dismiss(self) -> str:
-        """Dismiss the current dialog (F8)."""
-        if self._last_dialog is None:
+        """Dismiss the pending dialog (F8)."""
+        if self._pending_dialog is None:
             return "no dialog present"
-        if not self._dialog_handled:
-            await self._last_dialog.dismiss()
-            self._dialog_handled = True
+        await self._pending_dialog.dismiss()
+        self._dialog_handled = True
+        self._pending_dialog = None
         return "dialog dismissed"
 
     def dialog_info(self) -> dict[str, Any]:
-        """Return info about the last dialog (F8)."""
-        if self._last_dialog is None:
-            return {"present": False}
-        return {
-            "present": True,
-            "type": self._last_dialog.type,
-            "message": self._last_dialog.message,
-            "default_value": self._last_dialog.default_value,
-            "handled": self._dialog_handled,
-        }
+        """Return info about the current/last dialog (F8)."""
+        if self._pending_dialog is not None:
+            return {
+                "present": True,
+                "type": self._pending_dialog.type,
+                "message": self._pending_dialog.message,
+                "default_value": self._pending_dialog.default_value,
+                "handled": False,
+            }
+        if self._last_dialog is not None:
+            return {
+                "present": True,
+                "type": self._last_dialog.type,
+                "message": self._last_dialog.message,
+                "default_value": self._last_dialog.default_value,
+                "handled": self._dialog_handled,
+            }
+        return {"present": False}
+
+    def set_auto_dismiss(self, enabled: bool) -> str:
+        """Toggle auto-dismiss mode for dialogs (F8)."""
+        self._auto_dismiss_dialogs = enabled
+        return f"dialog auto-dismiss {'on' if enabled else 'off'}"
 
     # -- Multi-tab (F11) --
 
@@ -705,13 +733,15 @@ class StealthEngine:
         self._clear_refs()
         return f"switched to tab {tab_id}"
 
-    def tab_list(self) -> list[dict[str, Any]]:
-        """List all open tabs."""
+    async def tab_list(self) -> list[dict[str, Any]]:
+        """List all open tabs (PRD: ID, URL, title, active)."""
         result = []
         for tid, tab in self._tabs.items():
+            title = await tab.page.title()
             result.append({
                 "tab_id": tid,
                 "url": tab.page.url,
+                "title": title,
                 "active": tid == self._active_tab_id,
             })
         return result

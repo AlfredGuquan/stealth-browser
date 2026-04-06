@@ -223,6 +223,15 @@ def cmd_dialog(args: argparse.Namespace) -> None:
     session = _get_session(args)
     action = args.dialog_action
 
+    if action is None:
+        print("usage: stealth-browser dialog {accept,dismiss,info,auto-dismiss}")
+        print("\nsubcommands:")
+        print("  accept          Accept the dialog (optional text for prompts)")
+        print("  dismiss         Dismiss the dialog")
+        print("  info            Show dialog info")
+        print("  auto-dismiss    Toggle auto-dismiss mode (on/off)")
+        sys.exit(0)
+
     if action == "accept":
         text = getattr(args, "text", None)
         kwargs = {"action": "accept"}
@@ -243,6 +252,11 @@ def cmd_dialog(args: argparse.Namespace) -> None:
             print(f"handled: {result['handled']}")
         else:
             print("no dialog present")
+    elif action == "auto-dismiss":
+        mode = getattr(args, "mode", "on")
+        enabled = mode != "off"
+        result = _send(session, "dialog", action="auto-dismiss", enabled=enabled)
+        print(result["message"])
     else:
         error(f"unknown dialog action: {action}")
 
@@ -276,11 +290,21 @@ def cmd_tab(args: argparse.Namespace) -> None:
     session = _get_session(args)
     action = args.tab_action
 
+    if action is None:
+        print("usage: stealth-browser tab {list,create,switch,close}")
+        print("\nsubcommands:")
+        print("  list            List open tabs")
+        print("  create [url]    Create a new tab")
+        print("  switch <id>     Switch to a tab")
+        print("  close [id]      Close a tab (default: active)")
+        sys.exit(0)
+
     if action == "list":
         result = _send(session, "tab", action="list")
         for tab in result["tabs"]:
             marker = "*" if tab["active"] else " "
-            print(f"  {marker} [{tab['tab_id']}] {tab['url']}")
+            title = tab.get("title", "")
+            print(f"  {marker} [{tab['tab_id']}] {tab['url']} - {title}")
 
     elif action == "create":
         url = getattr(args, "url", None)
@@ -324,7 +348,19 @@ def cmd_batch(args: argparse.Namespace) -> None:
     if not isinstance(commands, list):
         error("batch expects a JSON array of command objects")
 
-    result = _send(session, "batch", commands=commands, fast=args.fast)
+    # Bypass _send() -- batch returns structured partial results on error,
+    # and _send() would sys.exit(1) before we can display them.
+    timeout_per_cmd = args.timeout / 1000  # ms -> seconds
+    total_timeout = max(timeout_per_cmd * len(commands), 60)
+    try:
+        result = send_command(
+            session, "batch", timeout=total_timeout,
+            commands=commands, fast=args.fast,
+        )
+    except RuntimeError as e:
+        error(str(e))
+    except Exception as e:
+        error(f"communication error: {e}")
 
     if result["status"] == "ok":
         print(f"batch: {len(result['results'])} commands completed")
@@ -470,6 +506,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_dialog_accept.add_argument("text", nargs="?", default=None, help="Text for prompt dialog")
     dialog_sub.add_parser("dismiss", help="Dismiss the dialog")
     dialog_sub.add_parser("info", help="Show dialog info")
+    p_dialog_auto = dialog_sub.add_parser("auto-dismiss", help="Toggle auto-dismiss mode")
+    p_dialog_auto.add_argument(
+        "mode", nargs="?", default="on", choices=["on", "off"],
+        help="on (default) or off"
+    )
 
     # -- F9: Navigation --
 

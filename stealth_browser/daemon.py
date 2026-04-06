@@ -249,6 +249,10 @@ class DaemonHandler:
                 elif action == "info":
                     info = self.engine.dialog_info()
                     return {"status": "ok", **info}
+                elif action == "auto-dismiss":
+                    enabled = body.get("enabled", True)
+                    msg = self.engine.set_auto_dismiss(enabled)
+                    return {"status": "ok", "message": msg}
                 else:
                     return {"status": "error", "error": f"unknown dialog action: {action}"}
 
@@ -271,7 +275,7 @@ class DaemonHandler:
             elif command == "tab":
                 action = body.get("action", "list")
                 if action == "list":
-                    tabs = self.engine.tab_list()
+                    tabs = await self.engine.tab_list()
                     return {"status": "ok", "tabs": tabs}
                 elif action == "create":
                     result = await self.engine.tab_create(body.get("url"))
@@ -464,8 +468,13 @@ def _wait_for_socket(session: str, timeout: float = 15.0) -> None:
     raise RuntimeError(f"daemon failed to start within {timeout}s")
 
 
-def send_command(session: str, command: str, **kwargs: Any) -> dict[str, Any]:
-    """Send a command to the daemon over Unix socket and return the response."""
+def send_command(
+    session: str, command: str, *, timeout: float = 60, **kwargs: Any
+) -> dict[str, Any]:
+    """Send a command to the daemon over Unix socket and return the response.
+
+    timeout: socket timeout in seconds (default 60).
+    """
     import http.client
     import socket as socket_module
 
@@ -477,7 +486,7 @@ def send_command(session: str, command: str, **kwargs: Any) -> dict[str, Any]:
 
     conn = http.client.HTTPConnection("localhost")
     s = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
-    s.settimeout(60)
+    s.settimeout(timeout)
     s.connect(str(sock))
     conn.sock = s
 

@@ -44,10 +44,11 @@ def mock_engine():
     engine.go_back = AsyncMock(return_value={"url": "https://example.com/back", "title": "Back"})
     engine.go_forward = AsyncMock(return_value={"url": "https://example.com/fwd", "title": "Forward"})
     engine.reload = AsyncMock(return_value={"url": "https://example.com/", "title": "Reloaded"})
-    engine.tab_list = MagicMock(return_value=[{"tab_id": 0, "url": "https://example.com/", "active": True}])
-    engine.tab_create = AsyncMock(return_value={"tab_id": 1})
-    engine.tab_switch = MagicMock(return_value="switched to tab 1")
-    engine.tab_close = AsyncMock(return_value="closed tab 0")
+    engine.tab_list = AsyncMock(return_value=[{"tab_id": 1, "url": "https://example.com/", "title": "Example", "active": True}])
+    engine.tab_create = AsyncMock(return_value={"tab_id": 2})
+    engine.tab_switch = MagicMock(return_value="switched to tab 2")
+    engine.tab_close = AsyncMock(return_value="closed tab 1")
+    engine.set_auto_dismiss = MagicMock(return_value="dialog auto-dismiss on")
     return engine
 
 
@@ -243,6 +244,14 @@ class TestDialogCommands:
         assert result["present"] is False
 
     @pytest.mark.asyncio
+    async def test_dialog_auto_dismiss(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "dialog", "action": "auto-dismiss", "enabled": True
+        })
+        assert result["status"] == "ok"
+        mock_engine.set_auto_dismiss.assert_called_once_with(True)
+
+    @pytest.mark.asyncio
     async def test_dialog_unknown_action(self, handler):
         result = await handler.handle({
             "command": "dialog", "action": "bogus"
@@ -286,12 +295,12 @@ class TestTabCommands:
     async def test_tab_create(self, handler, mock_engine):
         result = await handler.handle({"command": "tab", "action": "create"})
         assert result["status"] == "ok"
-        assert result["tab_id"] == 1
+        assert result["tab_id"] == 2
 
     @pytest.mark.asyncio
     async def test_tab_create_with_url(self, handler, mock_engine):
         mock_engine.tab_create = AsyncMock(return_value={
-            "tab_id": 1, "url": "https://example.com/", "title": "Example"
+            "tab_id": 2, "url": "https://example.com/", "title": "Example"
         })
         result = await handler.handle({
             "command": "tab", "action": "create", "url": "https://example.com/"
@@ -302,14 +311,14 @@ class TestTabCommands:
     @pytest.mark.asyncio
     async def test_tab_switch(self, handler, mock_engine):
         result = await handler.handle({
-            "command": "tab", "action": "switch", "tab_id": 1
+            "command": "tab", "action": "switch", "tab_id": 2
         })
         assert result["status"] == "ok"
 
     @pytest.mark.asyncio
     async def test_tab_close(self, handler, mock_engine):
         result = await handler.handle({
-            "command": "tab", "action": "close", "tab_id": 0
+            "command": "tab", "action": "close", "tab_id": 1
         })
         assert result["status"] == "ok"
 

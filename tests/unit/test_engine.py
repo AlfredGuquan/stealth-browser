@@ -39,9 +39,9 @@ def engine():
     tab.behavior = mock_behavior
     tab.captcha = mock_captcha
 
-    e._tabs = {0: tab}
-    e._active_tab_id = 0
-    e._next_tab_id = 1
+    e._tabs = {1: tab}
+    e._active_tab_id = 1
+    e._next_tab_id = 2
     return e
 
 
@@ -51,7 +51,7 @@ class TestStatus:
         result = await engine.status()
         assert result["browser_connected"] is True
         assert result["current_url"] == "https://example.com/"
-        assert result["active_tab"] == 0
+        assert result["active_tab"] == 1
         assert result["tab_count"] == 1
 
     def test_is_alive(self, engine):
@@ -275,8 +275,8 @@ class TestSelectCheck:
     async def test_select_option(self, engine):
         locator = AsyncMock()
         engine.page.locator = MagicMock(return_value=locator)
-        engine.behavior.page = engine.page
         result = await engine.select_option("#dropdown", "value1")
+        locator.hover.assert_called_once()
         locator.select_option.assert_called_once_with("value1")
         assert "selected" in result
 
@@ -284,8 +284,8 @@ class TestSelectCheck:
     async def test_check(self, engine):
         locator = AsyncMock()
         engine.page.locator = MagicMock(return_value=locator)
-        engine.behavior.page = engine.page
         result = await engine.check("#checkbox")
+        locator.hover.assert_called_once()
         locator.check.assert_called_once()
         assert "checked" in result
 
@@ -293,8 +293,8 @@ class TestSelectCheck:
     async def test_uncheck(self, engine):
         locator = AsyncMock()
         engine.page.locator = MagicMock(return_value=locator)
-        engine.behavior.page = engine.page
         result = await engine.uncheck("#checkbox")
+        locator.hover.assert_called_once()
         locator.uncheck.assert_called_once()
         assert "unchecked" in result
 
@@ -343,53 +343,74 @@ class TestDialog:
         mock_dialog = AsyncMock()
         mock_dialog.type = "alert"
         mock_dialog.message = "Are you sure?"
-        engine._last_dialog = mock_dialog
-        engine._dialog_handled = False
+        engine._pending_dialog = mock_dialog
 
         result = await engine.dialog_accept()
         mock_dialog.accept.assert_called_once()
         assert "accepted" in result
+        assert engine._pending_dialog is None
 
     @pytest.mark.asyncio
     async def test_dialog_accept_with_text(self, engine):
         mock_dialog = AsyncMock()
-        engine._last_dialog = mock_dialog
-        engine._dialog_handled = False
+        engine._pending_dialog = mock_dialog
 
         await engine.dialog_accept("my input")
         mock_dialog.accept.assert_called_once_with("my input")
+        assert engine._pending_dialog is None
 
     @pytest.mark.asyncio
     async def test_dialog_dismiss(self, engine):
         mock_dialog = AsyncMock()
-        engine._last_dialog = mock_dialog
-        engine._dialog_handled = False
+        engine._pending_dialog = mock_dialog
 
         result = await engine.dialog_dismiss()
         mock_dialog.dismiss.assert_called_once()
         assert "dismissed" in result
+        assert engine._pending_dialog is None
 
     def test_dialog_info_no_dialog(self, engine):
         result = engine.dialog_info()
         assert result["present"] is False
 
-    def test_dialog_info_with_dialog(self, engine):
+    def test_dialog_info_with_pending(self, engine):
         mock_dialog = MagicMock()
         mock_dialog.type = "confirm"
         mock_dialog.message = "OK?"
         mock_dialog.default_value = ""
-        engine._last_dialog = mock_dialog
-        engine._dialog_handled = False
+        engine._pending_dialog = mock_dialog
 
         result = engine.dialog_info()
         assert result["present"] is True
         assert result["type"] == "confirm"
-        assert result["message"] == "OK?"
+        assert result["handled"] is False
+
+    def test_dialog_info_with_handled(self, engine):
+        mock_dialog = MagicMock()
+        mock_dialog.type = "alert"
+        mock_dialog.message = "Done"
+        mock_dialog.default_value = ""
+        engine._last_dialog = mock_dialog
+        engine._dialog_handled = True
+        engine._pending_dialog = None
+
+        result = engine.dialog_info()
+        assert result["present"] is True
+        assert result["handled"] is True
 
     @pytest.mark.asyncio
     async def test_dialog_no_dialog_present(self, engine):
+        engine._pending_dialog = None
         result = await engine.dialog_accept()
         assert "no dialog" in result
+
+    def test_set_auto_dismiss(self, engine):
+        result = engine.set_auto_dismiss(True)
+        assert engine._auto_dismiss_dialogs is True
+        assert "on" in result
+        result = engine.set_auto_dismiss(False)
+        assert engine._auto_dismiss_dialogs is False
+        assert "off" in result
 
 
 class TestMultiTab:
@@ -404,8 +425,8 @@ class TestMultiTab:
 
         result = await engine.tab_create()
         assert "tab_id" in result
-        assert result["tab_id"] == 1  # Second tab
-        assert engine._active_tab_id == 1
+        assert result["tab_id"] == 2  # Second tab (IDs start at 1)
+        assert engine._active_tab_id == 2
 
     @pytest.mark.asyncio
     async def test_tab_create_with_url(self, engine):
@@ -430,11 +451,11 @@ class TestMultiTab:
         engine.context.new_page = AsyncMock(return_value=new_page)
         await engine.tab_create()
 
-        # Now close tab 1 (the active one)
-        result = await engine.tab_close(1)
+        # Now close tab 2 (the active one)
+        result = await engine.tab_close(2)
         assert "closed" in result
-        assert 1 not in engine._tabs
-        assert engine._active_tab_id == 0  # Falls back to tab 0
+        assert 2 not in engine._tabs
+        assert engine._active_tab_id == 1  # Falls back to tab 1
 
     @pytest.mark.asyncio
     async def test_tab_close_not_found(self, engine):
@@ -446,32 +467,43 @@ class TestMultiTab:
         mock_page2 = MagicMock()
         mock_tab2 = MagicMock(spec=TabInfo)
         mock_tab2.page = mock_page2
-        engine._tabs[1] = mock_tab2
-        engine._next_tab_id = 2
+        engine._tabs[2] = mock_tab2
+        engine._next_tab_id = 3
 
-        result = engine.tab_switch(1)
-        assert engine._active_tab_id == 1
+        result = engine.tab_switch(2)
+        assert engine._active_tab_id == 2
         assert "switched" in result
 
     def test_tab_switch_not_found(self, engine):
         with pytest.raises(ValueError, match="tab 5 not found"):
             engine.tab_switch(5)
 
-    def test_tab_list(self, engine):
-        tabs = engine.tab_list()
+    @pytest.mark.asyncio
+    async def test_tab_list(self, engine):
+        tabs = await engine.tab_list()
         assert len(tabs) == 1
-        assert tabs[0]["tab_id"] == 0
+        assert tabs[0]["tab_id"] == 1
         assert tabs[0]["active"] is True
+        assert "title" in tabs[0]
 
-    def test_tab_list_multiple(self, engine):
-        mock_page2 = MagicMock()
+    @pytest.mark.asyncio
+    async def test_tab_list_multiple(self, engine):
+        mock_page2 = AsyncMock()
         mock_page2.url = "https://other.com/"
+        mock_page2.title = AsyncMock(return_value="Other")
         mock_tab2 = MagicMock(spec=TabInfo)
         mock_tab2.page = mock_page2
-        engine._tabs[1] = mock_tab2
+        engine._tabs[2] = mock_tab2
 
-        tabs = engine.tab_list()
+        tabs = await engine.tab_list()
         assert len(tabs) == 2
+
+    def test_page_raises_when_no_tabs(self, engine):
+        """After closing all tabs, page property raises RuntimeError."""
+        engine._tabs.clear()
+        engine.browser = MagicMock()  # browser still alive
+        with pytest.raises(RuntimeError, match="no active tab"):
+            _ = engine.page
 
     @pytest.mark.asyncio
     async def test_tab_create_clears_refs(self, engine):
