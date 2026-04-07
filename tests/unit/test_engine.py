@@ -189,11 +189,21 @@ class TestWaitForUrlPattern:
 
     @pytest.mark.asyncio
     async def test_timeout_translates_to_clean_error(self, engine):
+        from patchright.async_api import TimeoutError as PWTimeoutError
         engine.page.wait_for_url = AsyncMock(
-            side_effect=Exception("Timeout 1500ms exceeded.")
+            side_effect=PWTimeoutError("Timeout 1500ms exceeded.")
         )
         with pytest.raises(TimeoutError, match="timeout waiting for url pattern"):
             await engine.wait_for_url_pattern("**/never", timeout=1500)
+
+    @pytest.mark.asyncio
+    async def test_non_timeout_error_bubbles_up(self, engine):
+        """Non-timeout failures should NOT be masked as 'timeout waiting for url'."""
+        engine.page.wait_for_url = AsyncMock(
+            side_effect=RuntimeError("page closed")
+        )
+        with pytest.raises(RuntimeError, match="page closed"):
+            await engine.wait_for_url_pattern("**/x", timeout=1500)
 
     @pytest.mark.asyncio
     async def test_respects_custom_timeout(self, engine):
@@ -254,11 +264,14 @@ class TestScreenshotAnnotated:
         from pathlib import Path as _P
         assert _P(out_path).stat().st_size > 0
 
-        # Called: read-scroll, scrollTo(0,0), scrollTo(50,200)
+        # Called: read-scroll, scrollTo(0,0) instant, scrollTo restore instant
         calls = evaluate_mock.call_args_list
         assert calls[0].args[0] == "[window.scrollX, window.scrollY]"
-        assert calls[1].args[0] == "window.scrollTo(0, 0)"
-        assert calls[2].args[0] == "window.scrollTo(50, 200)"
+        assert "scrollTo" in calls[1].args[0] and "behavior: 'instant'" in calls[1].args[0]
+        assert "0" in calls[1].args[0]  # scrolling to origin
+        # Restore call passes saved coords as second arg
+        assert "scrollTo" in calls[2].args[0] and "behavior: 'instant'" in calls[2].args[0]
+        assert calls[2].args[1] == [50, 200]
 
     @pytest.mark.asyncio
     async def test_restores_scroll_even_on_failure(self, engine):
@@ -273,8 +286,10 @@ class TestScreenshotAnnotated:
         with pytest.raises(Exception, match="boom"):
             await engine.screenshot_annotated()
 
-        # Third call must be the restore-scroll
-        assert evaluate_mock.call_args_list[-1].args[0] == "window.scrollTo(100, 200)"
+        # Last call must be the restore-scroll, passing saved coords as arg
+        last = evaluate_mock.call_args_list[-1]
+        assert "scrollTo" in last.args[0] and "behavior: 'instant'" in last.args[0]
+        assert last.args[1] == [100, 200]
 
     @pytest.mark.asyncio
     async def test_skips_refs_with_no_bounding_box(self, tmp_path, engine):

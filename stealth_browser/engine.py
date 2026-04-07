@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from patchright.async_api import Browser, BrowserContext, Dialog, Page, Playwright
+from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 from patchright.async_api import async_playwright
 
 from .behavior import HumanBehavior
@@ -559,10 +560,14 @@ class StealthEngine:
             raise RuntimeError("no refs cached, run snapshot -i first")
 
         # Save current scroll position so we can restore it after capture.
+        # Use behavior:'instant' to bypass any page-level `scroll-behavior:
+        # smooth` that would otherwise turn scrollTo into an animation —
+        # bounding_box() reads viewport-relative coords, so an in-flight scroll
+        # would shift every label by the residual offset.
         saved = await self.page.evaluate("[window.scrollX, window.scrollY]")
-        await self.page.evaluate("window.scrollTo(0, 0)")
-        # Give the browser a beat to settle the scroll before capturing.
-        await self.page.wait_for_timeout(100)
+        await self.page.evaluate(
+            "window.scrollTo({top: 0, left: 0, behavior: 'instant'})"
+        )
         try:
             png_bytes = await self.page.screenshot(full_page=True)
             viewport = self.page.viewport_size or {"width": 1920, "height": 1080}
@@ -591,7 +596,8 @@ class StealthEngine:
             )
         finally:
             await self.page.evaluate(
-                f"window.scrollTo({saved[0]}, {saved[1]})"
+                "([x, y]) => window.scrollTo({left: x, top: y, behavior: 'instant'})",
+                saved,
             )
 
         if path is None:
@@ -737,9 +743,10 @@ class StealthEngine:
             raise RuntimeError("browser not launched")
         try:
             await self.page.wait_for_url(pattern, timeout=timeout)
-        except Exception as e:
-            # PlaywrightTimeoutError (or any wait failure) -> translate for
-            # the daemon layer into a clean message.
+        except PlaywrightTimeoutError as e:
+            # Translate Playwright's timeout into a clean daemon-level error.
+            # Other failures (page closed, navigation aborted, invalid glob)
+            # bubble up as-is so the user sees the real cause.
             raise TimeoutError(
                 f"timeout waiting for url pattern: {pattern}"
             ) from e
