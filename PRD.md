@@ -174,3 +174,63 @@ V2 目标：从反检测专用工具升级为通用浏览器自动化 CLI，替�
   - `--fast` 跳过间隔
   - 第 2 条命令失败时，返回第 1 条的成功结果和第 2 条的错误
 - 依赖: F6（使用 ref）
+
+---
+
+## V3: QA Migration（替代 agent-browser）
+
+V3 目标：补齐 stealth-browser 对 ui-qa-review → browser-qa-agent 调用链的能力支持，让 stealth-browser 能完整替代 agent-browser，最终下线 agent-browser CLI。本版本只覆盖 dogfood 必需的最小能力集，annotate / wait-url / localhost 之外的长尾（视频录制、viewport / device 模拟、network requests、diff）等遇到具体需求再补。
+
+### F14: Localhost Cookie/Login 跳过
+
+- 动机: dev server 都跑在 localhost，但 stealth-browser 的 `open` 默认对所有 URL 走 cookie 提取流程：找不到对应 cookie → 检测到 login 页面 → exit(1)。这一条直接阻塞 ui-qa-review 场景下使用 stealth-browser 替代 agent-browser。dev 场景的 cookie 通常通过其他方式设置（fixture、auth API、登录流程本身就是被测对象），不需要从用户的 Chrome 提取。
+- 描述: `open` 命令在导航前判断 URL hostname。命中以下规则视为本地开发环境，自动跳过 cookie 提取/注入和 login_redirect 检测：
+  - hostname ∈ {`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`}
+  - hostname 以 `.local` 结尾（mDNS / Bonjour）
+
+  仍提供 `--no-cookie` 全局 flag 作为通用 escape hatch，对任意 URL 强制跳过 cookie 注入和 login_redirect 检测。两条路径走相同的"无 cookie 模式"分支，避免代码重复。
+- 约束:
+  - 内网 IP 段（10.x、192.168.x、172.16-31.x）**不算** localhost，仍走正常 cookie 注入分支——这些可能是真实部署的内网应用
+  - localhost 自动识别和 `--no-cookie` flag 都不能影响小红书/Twitter 等公网站点的现有 cookie 注入回归
+  - 跳过 cookie 注入的同时**也要跳过 login_redirect 检测**，否则 QA 测应用自身的登录功能时会被误判为 "session 过期"
+- 验收标准:
+  - `open http://localhost:3000` 不尝试 cookie 提取，直接导航，stdout 输出 URL/Title，exit 0
+  - `open http://localhost:3000/login` 显示应用的登录页，**不**报 "session expired"，exit 0
+  - `open http://127.0.0.1:8080` 行为同 localhost
+  - `open http://example.local` 行为同 localhost
+  - `open http://192.168.1.100` 仍走 cookie 注入流程（验证内网 IP 不被误判为 localhost）
+  - `--no-cookie open https://xiaohongshu.com` 跳过 cookie 注入和 login 检测
+  - 对小红书/Twitter 的默认行为不变（回归）
+- 依赖: F2（修改 cookie 注入分支）
+
+### F15: Wait URL Pattern
+
+- 动机: 现有 `wait` 命令支持 element/text/network-idle/<ms> 四种模式，但 SPA 的客户端路由跳转后页面 DOM 几乎不变（同一组件 reuse），用 `wait element` 或 `wait text` 都不可靠——需要直接等 URL 模式匹配。典型场景：登录后跳转 `/dashboard`，agent 用 `wait url "**/dashboard"` 比其他 wait 模式更精确。ui-qa-review 的 setup 流程（"提交表单后等待跳转到结果页"）会用到。
+- 描述: 在 `wait` 命令下加 `wait url <pattern>` 子命令。pattern 支持 glob（`**` 通配任意路径段），daemon 内部用 Playwright 的 `page.wait_for_url(pattern, timeout=…)` 实现。命中后立即返回当前 URL 到 stdout，超时返回 exit 1 并打印 "timeout waiting for url pattern: …"。timeout 跟随全局 `--timeout`。
+- 约束:
+  - pattern 是完整 URL 而非 path 片段，匹配整个 URL 字符串
+  - glob 而非 regex（避免转义复杂度，与 agent-browser 的 `wait --url` 语义对齐）
+  - 不影响其他 wait 子命令
+- 验收标准:
+  - `wait url "**/dashboard"` 当前 URL 命中后立即返回，stdout 打印新 URL
+  - `wait url "https://example.com/**"` 跨域跳转后命中
+  - `wait url "**/notexist"` 默认超时后 exit 1，stderr 包含 timeout 信息
+  - 已经在目标 URL 时立即返回（不需要 navigation 触发）
+- 依赖: F7（wait 命令框架）
+
+### F16: Screenshot Annotate
+
+- 动机: ui-qa-review 的 VISION 模式让 LLM 通过截图理解页面状态。每个可交互元素叠一个编号标签（[1], [2]...）映射到 @e1, @e2... 后，LLM 可以直接从截图判断"点 [3]"，省一次 snapshot 调用并降低 ref 失配风险。这是 ui-qa-review 在视觉验证场景下的关键依赖。
+- 描述: `screenshot` 命令加 `--annotate` flag。daemon 已维护 ref → element 映射（来自最近一次 `snapshot -i`），annotate 模式下用 `element.bounding_box()` 获取每个 ref 的屏幕坐标，在元素位置叠一个半透明黄色背景 + 黑色数字 label。Label 默认放在元素左上角内侧（避免越出 viewport）。截图保存后 stdout 第一行输出文件路径，后续行输出 legend：`[N] @eN <tag> "<text>"` 一行一个。
+- 约束:
+  - 必须先有 snapshot -i 缓存的 refs，否则 annotate 报错 `no refs cached, run snapshot -i first` 并 exit 1
+  - Label 编号与 ref 编号一致（@e1 → [1]）
+  - 不修改页面 DOM——叠加发生在截图后（PIL/Pillow 在图像层绘制），不通过 page.evaluate 注入 overlay。这避免对人类行为模拟和反检测的潜在干扰
+  - 字号和颜色固定，不暴露配置
+- 验收标准:
+  - `snapshot -i` 后 `screenshot --annotate` 生成带编号标签的截图，路径打印到 stdout 第一行
+  - stdout 后续行打印 legend：每行格式 `[N] @eN <tag> "<text>"`
+  - 没有 ref 缓存时 `screenshot --annotate` 报错并 exit 1
+  - 标签 [N] 视觉上在对应元素上方/左上角
+  - 不改动页面 DOM（截图前后 snapshot 输出一致）
+- 依赖: F6（refs 系统），新增 Pillow 依赖（uv add pillow）
