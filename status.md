@@ -8,15 +8,26 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 
 ## In Progress
 
-- V2 PR 待合并：AlfredGuquan/stealth-browser#1
+- V3 QA 迁移 build：localhost cookie/login 跳过 + `wait --url` + `screenshot --annotate`，目标让 stealth-browser 替代 agent-browser 跑通 ui-qa-review
 - 手动 e2e 验证待做：`open` → `snapshot -i` → `click @e1` → `tab create` → `batch`
 
 ## Pending
 
+- `open` 对 localhost 不可用：cookie 注入找不到 Chrome cookie → 检测到 login 页面 → exit(1)。localhost 开发测试场景（cookie 通过其他方式设置）需要跳过 cookie 注入和登录检测的选项（如 `--no-cookie` flag）
+- `batch` 命令缺少条件断言：现有 batch 只是顺序执行命令，无法在步骤之间做"等待状态满足"的检查。多步交互测试（翻卡→评分→验证→重复）只能拆成多次独立 Bash 调用，每次 ~6s 进程启动开销累加。建议加入 `wait text/element` 在 batch 中作为隐式断言（超时报错退出），让多步流程一次调用完成
+- `@eN` ref 在 `batch` 中不可用：导航后 ref 失效，但 batch 内部没机会重新 `snapshot -i` 获取新 ref。当前只能在 batch 中用 CSS selector，限制了 ref 系统的适用范围。考虑允许 batch 步骤中插入 `snapshot` 命令并把结果传递给后续步骤，或者支持"navigate 后自动重新生成 refs"
 - 收集真实小红书滑块截图验证 CAPTCHA 模板匹配精度
 - 更新 stealth-browser skill（SKILL.md）补充 V2 新增命令
 
 ## Backlog
+
+### Agent 接口 polish（F5 细化）
+
+- [ ] `_get_session()` fallback 非确定性：不指定 `--site` 且有多个活跃 session 时，遍历 `STATE_DIR.glob("*.pid")` 返回顺序不保证，可能操作到非预期 session。修复方向：多 session 时必须显式 `--site`，否则报错列出所有可选 session
+- [ ] `cmd_open` 登录重定向时混合输出：检测到 login_redirect 后 stdout 已经打印了 URL/Title 再 stderr 报错 exit 1，agent 可能基于 stdout 内容误判成功。修复方向：失败路径只写 stderr，stdout 不输出任何字段
+- [ ] Exit code 分档：参数错误用 exit 2，认证过期/cookie 失效用 exit 5，其他运行时错误统一 exit 1。不强行细分网络/超时/元素未找到——Patchright 层错误难以可靠分类，误分类会诱导 agent 走错分支
+- [ ] 错误消息结构化（保持纯文本，F5 明确排除 JSON）：在 `error:` 后追加 `code:` `retryable:` `fix:` 三行，agent 靠 key 解析。例：`error: page.goto timed out\ncode: TIMEOUT\nretryable: true\nfix: retry with longer --timeout`
+- [ ] `--help` 增强：每个子命令补 EXAMPLES 段和 LIMITATIONS 段，agent 靠 `--help` 自发现用法和已知边界
 
 ### P2 — 效率提升（未实现部分）
 
