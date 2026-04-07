@@ -9,10 +9,16 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import NoReturn
+from urllib.parse import urlparse
 
 # Base directory for all stealth-browser state files
 STATE_DIR = Path.home() / ".stealth-browser"
 SESSIONS_DIR = STATE_DIR / "sessions"
+
+# F14: hostnames that count as local dev -- cookie injection and
+# login_redirect detection are both skipped for these.
+# Internal IPs (192.168.x, 10.x, 172.16-31.x) do NOT count as local dev.
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 # Default Chrome UA -- updated when we can detect the real version
 DEFAULT_CHROME_UA = (
@@ -69,6 +75,20 @@ def get_chrome_ua() -> str:
 def is_login_redirect(url: str) -> bool:
     """Heuristic: does the URL look like a login/auth page?"""
     return bool(LOGIN_PATTERNS.search(url))
+
+
+def is_local_dev_url(url: str) -> bool:
+    """True if the URL targets a local dev host (F14).
+
+    Matches localhost / 127.0.0.1 / ::1 / 0.0.0.0 / *.local hosts. Internal
+    private IPs (192.168.x, 10.x, 172.16-31.x) deliberately do NOT match --
+    they may still need site cookies.
+    """
+    host = (urlparse(url).hostname or "").lower()
+    # Strip IPv6 brackets if urlparse kept them (hostname usually doesn't)
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    return host in LOCAL_HOSTS or host.endswith(".local")
 
 
 def error(msg: str, exit_code: int = 1) -> NoReturn:

@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 from patchright.async_api import Browser, BrowserContext, Dialog, Page, Playwright
@@ -192,13 +193,24 @@ class StealthEngine:
     # -- Navigation (F9 extends) --
 
     async def navigate(
-        self, url: str, *, site: str | None = None, timeout: int = 30000
+        self,
+        url: str,
+        *,
+        site: str | None = None,
+        timeout: int = 30000,
+        skip_cookies: bool = False,
     ) -> dict[str, Any]:
-        """Navigate to a URL. If site is given, inject cookies first."""
+        """Navigate to a URL. If site is given, inject cookies first.
+
+        When skip_cookies=True (F14: localhost / --no-cookie), both cookie
+        injection and login_redirect detection are bypassed. This prevents
+        the "session expired" warning from firing on dev URLs that happen
+        to use /login paths.
+        """
         if self.page is None:
             raise RuntimeError("browser not launched")
 
-        if site and self._current_site != site:
+        if not skip_cookies and site and self._current_site != site:
             count = await self.inject_cookies(site, url)
             logger.info("injected %d cookies for %s", count, site)
 
@@ -211,7 +223,7 @@ class StealthEngine:
         final_url = self.page.url
         title = await self.page.title()
 
-        if is_login_redirect(final_url) and site:
+        if not skip_cookies and is_login_redirect(final_url) and site:
             logger.info("login redirect detected, re-extracting cookies")
             clear_cache(site)
             count = await self.inject_cookies(site, url)
@@ -526,6 +538,77 @@ class StealthEngine:
         await self.page.screenshot(path=path, full_page=True)
         return path
 
+    async def screenshot_annotated(
+        self, path: str | None = None
+    ) -> dict[str, Any]:
+        """Take a full-page screenshot with @eN refs overlaid (F16).
+
+        Requires a prior `snapshot -i` so ``self._ref_map`` is populated.
+        The page is scrolled to (0,0) before capture so that bounding boxes
+        (which are viewport-relative) line up with the full-page PNG; the
+        original scroll position is restored in a try/finally.
+
+        Iframe-locator bounding boxes are auto-translated to main-page
+        coordinates by Playwright, so no manual offset is needed.
+
+        Returns: ``{"path": <file>, "legend": [{ref, tag, text}, ...]}``
+        """
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        if not self._ref_map:
+            raise RuntimeError("no refs cached, run snapshot -i first")
+
+        # Save current scroll position so we can restore it after capture.
+        saved = await self.page.evaluate("[window.scrollX, window.scrollY]")
+        await self.page.evaluate("window.scrollTo(0, 0)")
+        # Give the browser a beat to settle the scroll before capturing.
+        await self.page.wait_for_timeout(100)
+        try:
+            png_bytes = await self.page.screenshot(full_page=True)
+            viewport = self.page.viewport_size or {"width": 1920, "height": 1080}
+            viewport_w = viewport["width"]
+
+            boxes: list[dict[str, Any]] = []
+            for ref, info in self._ref_map.items():
+                try:
+                    locator = await self._get_locator(ref)
+                    bb = await locator.bounding_box()
+                except Exception:
+                    # hidden / detached / cross-origin iframe -> skip silently
+                    continue
+                if bb is None:
+                    continue
+                boxes.append({
+                    "ref": ref,
+                    "bbox": bb,
+                    "tag": info["tag"],
+                    "text": info["text"],
+                })
+
+            from .annotate import overlay_labels
+            out_bytes = overlay_labels(
+                png_bytes, boxes, viewport_css_width=viewport_w
+            )
+        finally:
+            await self.page.evaluate(
+                f"window.scrollTo({saved[0]}, {saved[1]})"
+            )
+
+        if path is None:
+            import tempfile
+            f = tempfile.NamedTemporaryFile(
+                delete=False, prefix="stealth-annot-", suffix=".png", dir="/tmp"
+            )
+            path = f.name
+            f.close()
+        Path(path).write_bytes(out_bytes)
+
+        legend = [
+            {"ref": b["ref"], "tag": b["tag"], "text": b["text"]}
+            for b in boxes
+        ]
+        return {"path": path, "legend": legend}
+
     async def eval_js(self, expression: str) -> Any:
         """Evaluate JavaScript on the page and return the result."""
         if self.page is None:
@@ -637,6 +720,30 @@ class StealthEngine:
             raise RuntimeError("browser not launched")
         await self.page.wait_for_timeout(ms)
         return f"waited {ms}ms"
+
+    async def wait_for_url_pattern(
+        self, pattern: str, *, timeout: int = 30000
+    ) -> str:
+        """Wait until the current page URL matches a glob pattern (F15).
+
+        Thin wrapper around Playwright's ``page.wait_for_url``. Glob syntax:
+        ``**`` matches multiple path segments, ``*`` matches a single
+        segment. Matching is literal -- no URL normalization is performed.
+
+        Raises TimeoutError on timeout so the daemon can surface a clean
+        status=error response.
+        """
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        try:
+            await self.page.wait_for_url(pattern, timeout=timeout)
+        except Exception as e:
+            # PlaywrightTimeoutError (or any wait failure) -> translate for
+            # the daemon layer into a clean message.
+            raise TimeoutError(
+                f"timeout waiting for url pattern: {pattern}"
+            ) from e
+        return self.page.url
 
     # -- Dialog (F8) --
 

@@ -38,6 +38,11 @@ def mock_engine():
     engine.wait_for_text = AsyncMock(return_value="text 'Hello' found")
     engine.wait_for_network_idle = AsyncMock(return_value="network idle")
     engine.wait_for_timeout = AsyncMock(return_value="waited 1000ms")
+    engine.wait_for_url_pattern = AsyncMock(return_value="https://example.com/")
+    engine.screenshot_annotated = AsyncMock(return_value={
+        "path": "/tmp/annot.png",
+        "legend": [{"ref": "@e0", "tag": "button", "text": "Submit"}],
+    })
     engine.dialog_accept = AsyncMock(return_value="dialog accepted")
     engine.dialog_dismiss = AsyncMock(return_value="dialog dismissed")
     engine.dialog_info = MagicMock(return_value={"present": False})
@@ -369,6 +374,77 @@ class TestBatchCommand:
         })
         assert result["status"] == "ok"
         assert result["results"] == []
+
+
+class TestV3Commands:
+    """V3: F14 (skip_cookies), F15 (wait url), F16 (screenshot --annotate)."""
+
+    @pytest.mark.asyncio
+    async def test_open_forwards_skip_cookies(self, handler, mock_engine):
+        await handler.handle({
+            "command": "open",
+            "url": "http://localhost:3000/",
+            "site": "localhost",
+            "skip_cookies": True,
+        })
+        _, kwargs = mock_engine.navigate.call_args
+        assert kwargs.get("skip_cookies") is True
+
+    @pytest.mark.asyncio
+    async def test_open_defaults_skip_cookies_false(self, handler, mock_engine):
+        await handler.handle({
+            "command": "open",
+            "url": "https://example.com/",
+            "site": "example.com",
+        })
+        _, kwargs = mock_engine.navigate.call_args
+        assert kwargs.get("skip_cookies") is False
+
+    @pytest.mark.asyncio
+    async def test_wait_url(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "wait",
+            "type": "url",
+            "target": "**example.com**",
+            "timeout": 5000,
+        })
+        assert result["status"] == "ok"
+        mock_engine.wait_for_url_pattern.assert_called_once_with(
+            "**example.com**", timeout=5000
+        )
+
+    @pytest.mark.asyncio
+    async def test_wait_url_timeout_surfaces_as_error(self, handler, mock_engine):
+        mock_engine.wait_for_url_pattern = AsyncMock(
+            side_effect=TimeoutError("timeout waiting for url pattern: **/x")
+        )
+        result = await handler.handle({
+            "command": "wait",
+            "type": "url",
+            "target": "**/x",
+            "timeout": 500,
+        })
+        assert result["status"] == "error"
+        assert "timeout" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_screenshot_annotate(self, handler, mock_engine):
+        result = await handler.handle({
+            "command": "screenshot",
+            "annotate": True,
+        })
+        assert result["status"] == "ok"
+        assert result["path"] == "/tmp/annot.png"
+        assert result["legend"][0]["ref"] == "@e0"
+        mock_engine.screenshot_annotated.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_screenshot_default_path_unchanged(self, handler, mock_engine):
+        """Without --annotate, the dispatch must still hit plain screenshot()."""
+        result = await handler.handle({"command": "screenshot"})
+        assert result["status"] == "ok"
+        assert result["path"] == "/tmp/shot.png"
+        mock_engine.screenshot_annotated.assert_not_called()
 
 
 class TestIsDaemonRunning:

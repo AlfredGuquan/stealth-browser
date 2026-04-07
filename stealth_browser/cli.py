@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .daemon import is_daemon_running, send_command, start_daemon
-from .utils import error
+from .utils import error, is_local_dev_url
 
 
 def _site_from_url(url: str) -> str:
@@ -68,8 +68,19 @@ def cmd_open(args: argparse.Namespace) -> None:
     site = args.site or _site_from_url(url)
     session = site
 
+    # F14: skip cookies and login_redirect detection for local dev URLs
+    # or when --no-cookie is explicitly set.
+    skip_cookies = bool(getattr(args, "no_cookie", False)) or is_local_dev_url(url)
+
     _ensure_daemon(session, args.headed)
-    result = _send(session, "open", url=url, site=site, timeout=args.timeout)
+    result = _send(
+        session,
+        "open",
+        url=url,
+        site=site,
+        timeout=args.timeout,
+        skip_cookies=skip_cookies,
+    )
 
     print(f"URL: {result['url']}")
     print(f"Title: {result['title']}")
@@ -122,8 +133,17 @@ def cmd_upload(args: argparse.Namespace) -> None:
 
 def cmd_screenshot(args: argparse.Namespace) -> None:
     session = _get_session(args)
-    result = _send(session, "screenshot", path=args.path)
+    annotate = bool(getattr(args, "annotate", False))
+    result = _send(
+        session, "screenshot", path=args.path, annotate=annotate
+    )
+    # Line 1: file path (unchanged contract for existing agents).
     print(result["path"])
+    if annotate:
+        # Legend: [N] @eN <tag> "text"
+        for i, item in enumerate(result.get("legend", []), start=1):
+            text = item.get("text", "") or ""
+            print(f'[{i}] {item["ref"]} <{item["tag"]}> "{text}"')
 
 
 def cmd_eval(args: argparse.Namespace) -> None:
@@ -209,6 +229,13 @@ def cmd_wait(args: argparse.Namespace) -> None:
     elif wait_type.isdigit():
         # `wait 5000` -- wait for N ms
         result = _send(session, "wait", type="timeout", target=wait_type)
+    elif wait_type == "url":
+        # F15: wait url <glob-pattern>
+        if not target:
+            error("wait url: pattern required (e.g. 'wait url \"**/success\"')")
+        result = _send(
+            session, "wait", type="url", target=target, timeout=timeout
+        )
     else:
         # wait element <selector|ref> or wait text <text>
         result = _send(
@@ -407,6 +434,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout", type=int, default=30000, help="Command timeout in ms"
     )
+    parser.add_argument(
+        "--no-cookie",
+        action="store_true",
+        dest="no_cookie",
+        help="Skip cookie injection and login_redirect detection (F14). "
+             "Useful for local dev URLs or sites where cookies aren't needed.",
+    )
 
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -451,6 +485,12 @@ def build_parser() -> argparse.ArgumentParser:
     # screenshot
     p_ss = sub.add_parser("screenshot", help="Take a screenshot")
     p_ss.add_argument("path", nargs="?", default=None, help="Output file path")
+    p_ss.add_argument(
+        "--annotate",
+        action="store_true",
+        help="Overlay numeric labels on @eN refs from the last snapshot "
+             "(F16). Requires a prior `snapshot -i`.",
+    )
 
     # eval
     p_eval = sub.add_parser("eval", help="Execute JavaScript")
@@ -491,11 +531,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_wait = sub.add_parser("wait", help="Wait for condition")
     p_wait.add_argument(
         "wait_type",
-        help="element, text, network-idle, or milliseconds (e.g. 5000)"
+        help="element, text, url, network-idle, or milliseconds (e.g. 5000)"
     )
     p_wait.add_argument(
         "target", nargs="?", default="",
-        help="@eN ref/CSS selector (for element) or text string (for text)"
+        help="@eN ref/CSS selector (for element), text string (for text), "
+             "or URL glob pattern (for url)"
     )
 
     # -- F8: Dialog --

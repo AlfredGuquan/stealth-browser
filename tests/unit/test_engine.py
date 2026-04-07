@@ -137,6 +137,180 @@ class TestNavigate:
         result = await engine.navigate("https://example.com/dashboard")
         assert result["login_redirect"] is False  # No site -> no redirect detection
 
+    @pytest.mark.asyncio
+    async def test_navigate_skip_cookies_bypasses_injection(self, engine):
+        """F14: skip_cookies=True must not call inject_cookies."""
+        engine.page.goto = AsyncMock()
+        engine.page.wait_for_timeout = AsyncMock()
+        engine.page.url = "http://localhost:3000/"
+        engine.page.title = AsyncMock(return_value="Dev")
+        engine.inject_cookies = AsyncMock(return_value=5)
+
+        result = await engine.navigate(
+            "http://localhost:3000/",
+            site="localhost",
+            skip_cookies=True,
+        )
+        engine.inject_cookies.assert_not_called()
+        assert result["login_redirect"] is False
+
+    @pytest.mark.asyncio
+    async def test_navigate_skip_cookies_bypasses_login_redirect(self, engine):
+        """F14: skip_cookies=True must not treat /login paths as session expired."""
+        engine.page.goto = AsyncMock()
+        engine.page.wait_for_timeout = AsyncMock()
+        # After goto, the page lands on a URL that looks like a login page.
+        engine.page.url = "http://localhost:3000/login"
+        engine.page.title = AsyncMock(return_value="Dev Login")
+        engine.inject_cookies = AsyncMock(return_value=0)
+
+        result = await engine.navigate(
+            "http://localhost:3000/login",
+            site="localhost",
+            skip_cookies=True,
+        )
+        # Must NOT flip login_redirect even though the URL matches the pattern
+        assert result["login_redirect"] is False
+        engine.inject_cookies.assert_not_called()
+
+
+class TestWaitForUrlPattern:
+    """F15: glob-based URL wait."""
+
+    @pytest.mark.asyncio
+    async def test_matches_current_url(self, engine):
+        engine.page.wait_for_url = AsyncMock()
+        engine.page.url = "https://example.com/"
+        result = await engine.wait_for_url_pattern("**example.com**")
+        engine.page.wait_for_url.assert_called_once_with(
+            "**example.com**", timeout=30000
+        )
+        assert result == "https://example.com/"
+
+    @pytest.mark.asyncio
+    async def test_timeout_translates_to_clean_error(self, engine):
+        engine.page.wait_for_url = AsyncMock(
+            side_effect=Exception("Timeout 1500ms exceeded.")
+        )
+        with pytest.raises(TimeoutError, match="timeout waiting for url pattern"):
+            await engine.wait_for_url_pattern("**/never", timeout=1500)
+
+    @pytest.mark.asyncio
+    async def test_respects_custom_timeout(self, engine):
+        engine.page.wait_for_url = AsyncMock()
+        engine.page.url = "https://x.com/"
+        await engine.wait_for_url_pattern("**x.com**", timeout=5000)
+        engine.page.wait_for_url.assert_called_once_with(
+            "**x.com**", timeout=5000
+        )
+
+
+class TestScreenshotAnnotated:
+    """F16: annotated full-page screenshot."""
+
+    @pytest.mark.asyncio
+    async def test_requires_refs(self, engine):
+        """No refs cached -> clear error telling the user to run snapshot -i."""
+        engine._ref_map = {}
+        with pytest.raises(RuntimeError, match="no refs cached"):
+            await engine.screenshot_annotated()
+
+    @pytest.mark.asyncio
+    async def test_scrolls_to_origin_and_restores(self, tmp_path, engine):
+        """Scroll must be reset to (0,0) for capture and restored afterwards."""
+        from unittest.mock import call
+        engine._ref_map = {
+            "@e0": {"frame_index": 0, "tag": "button", "text": "Click"},
+        }
+        # Mock a locator with a bounding_box
+        mock_locator = AsyncMock()
+        mock_locator.bounding_box = AsyncMock(return_value={
+            "x": 10.0, "y": 20.0, "width": 100.0, "height": 40.0,
+        })
+        engine.page.locator = MagicMock(return_value=mock_locator)
+
+        # Scroll evaluate returns [50, 200] first, then None for scrollTo calls
+        evaluate_mock = AsyncMock(side_effect=[[50, 200], None, None])
+        engine.page.evaluate = evaluate_mock
+        engine.page.wait_for_timeout = AsyncMock()
+        # Minimal 2x2 transparent PNG bytes
+        import io
+        from PIL import Image as _Image
+        buf = io.BytesIO()
+        _Image.new("RGBA", (1280, 720), (255, 255, 255, 255)).save(buf, "PNG")
+        engine.page.screenshot = AsyncMock(return_value=buf.getvalue())
+        engine.page.viewport_size = {"width": 1280, "height": 720}
+
+        out_path = str(tmp_path / "annot.png")
+        result = await engine.screenshot_annotated(out_path)
+
+        # Legend has our one box
+        assert result["path"] == out_path
+        assert len(result["legend"]) == 1
+        assert result["legend"][0]["ref"] == "@e0"
+        assert result["legend"][0]["tag"] == "button"
+
+        # Output file exists and is non-empty
+        from pathlib import Path as _P
+        assert _P(out_path).stat().st_size > 0
+
+        # Called: read-scroll, scrollTo(0,0), scrollTo(50,200)
+        calls = evaluate_mock.call_args_list
+        assert calls[0].args[0] == "[window.scrollX, window.scrollY]"
+        assert calls[1].args[0] == "window.scrollTo(0, 0)"
+        assert calls[2].args[0] == "window.scrollTo(50, 200)"
+
+    @pytest.mark.asyncio
+    async def test_restores_scroll_even_on_failure(self, engine):
+        """If screenshot fails, the original scroll must still be restored."""
+        engine._ref_map = {"@e0": {"frame_index": 0, "tag": "a", "text": "x"}}
+        evaluate_mock = AsyncMock(side_effect=[[100, 200], None, None])
+        engine.page.evaluate = evaluate_mock
+        engine.page.wait_for_timeout = AsyncMock()
+        engine.page.screenshot = AsyncMock(side_effect=Exception("boom"))
+        engine.page.viewport_size = {"width": 1280, "height": 720}
+
+        with pytest.raises(Exception, match="boom"):
+            await engine.screenshot_annotated()
+
+        # Third call must be the restore-scroll
+        assert evaluate_mock.call_args_list[-1].args[0] == "window.scrollTo(100, 200)"
+
+    @pytest.mark.asyncio
+    async def test_skips_refs_with_no_bounding_box(self, tmp_path, engine):
+        """Hidden elements return None from bounding_box() -- skip them."""
+        engine._ref_map = {
+            "@e0": {"frame_index": 0, "tag": "button", "text": "Visible"},
+            "@e1": {"frame_index": 0, "tag": "input", "text": ""},
+        }
+        visible_loc = AsyncMock()
+        visible_loc.bounding_box = AsyncMock(return_value={
+            "x": 0.0, "y": 0.0, "width": 50.0, "height": 20.0,
+        })
+        hidden_loc = AsyncMock()
+        hidden_loc.bounding_box = AsyncMock(return_value=None)
+
+        def _locator_for(sel):
+            # @e0 -> visible, @e1 -> hidden
+            if '@e0' in sel:
+                return visible_loc
+            return hidden_loc
+
+        engine.page.locator = MagicMock(side_effect=_locator_for)
+        engine.page.evaluate = AsyncMock(side_effect=[[0, 0], None, None])
+        engine.page.wait_for_timeout = AsyncMock()
+        import io
+        from PIL import Image as _Image
+        buf = io.BytesIO()
+        _Image.new("RGBA", (1280, 720), (255, 255, 255, 255)).save(buf, "PNG")
+        engine.page.screenshot = AsyncMock(return_value=buf.getvalue())
+        engine.page.viewport_size = {"width": 1280, "height": 720}
+
+        result = await engine.screenshot_annotated(str(tmp_path / "x.png"))
+        # Only the visible one ends up in the legend
+        assert len(result["legend"]) == 1
+        assert result["legend"][0]["ref"] == "@e0"
+
 
 class TestNavigation:
     """F9: back, forward, reload."""
