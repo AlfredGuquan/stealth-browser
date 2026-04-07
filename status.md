@@ -8,16 +8,23 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 
 ## In Progress
 
-- V3 QA 迁移 build：localhost cookie/login 跳过 + `wait --url` + `screenshot --annotate`，目标让 stealth-browser 替代 agent-browser 跑通 ui-qa-review
-- 手动 e2e 验证待做：`open` → `snapshot -i` → `click @e1` → `tab create` → `batch`
+- 手动 e2e 验证待做：`open` → `snapshot -i` → `click @e1` → `tab create` → `batch`（V2 验证套件）
 
 ## Pending
 
-- `open` 对 localhost 不可用：cookie 注入找不到 Chrome cookie → 检测到 login 页面 → exit(1)。localhost 开发测试场景（cookie 通过其他方式设置）需要跳过 cookie 注入和登录检测的选项（如 `--no-cookie` flag）
+### V3 follow-up（迁移收尾，下一轮 build）
+
+- 新建 `~/.claude/agents/stealth-browser-qa-agent.md`（复制 browser-qa-agent，把 `skills:` 字段从 `[agent-browser]` 改成 `[stealth-browser]`）
+- `~/.claude/skills/ui-qa-review/SKILL.md` 加 `UI_QA_REVIEW_BROWSER` 环境变量切换 agent type，默认仍走 agent-browser
+- 在 data-annotation 项目跑首次双轨 dogfood，比对 stealth-browser vs agent-browser 的 verdict 截图一致性
+- 验证通过后：切默认 `stealth-browser`，下线 agent-browser，移除 suppress-plugin-skills hook 中相关条目
+
+### V2/V3 backlog
+
 - `batch` 命令缺少条件断言：现有 batch 只是顺序执行命令，无法在步骤之间做"等待状态满足"的检查。多步交互测试（翻卡→评分→验证→重复）只能拆成多次独立 Bash 调用，每次 ~6s 进程启动开销累加。建议加入 `wait text/element` 在 batch 中作为隐式断言（超时报错退出），让多步流程一次调用完成
 - `@eN` ref 在 `batch` 中不可用：导航后 ref 失效，但 batch 内部没机会重新 `snapshot -i` 获取新 ref。当前只能在 batch 中用 CSS selector，限制了 ref 系统的适用范围。考虑允许 batch 步骤中插入 `snapshot` 命令并把结果传递给后续步骤，或者支持"navigate 后自动重新生成 refs"
 - 收集真实小红书滑块截图验证 CAPTCHA 模板匹配精度
-- 更新 stealth-browser skill（SKILL.md）补充 V2 新增命令
+- 更新 stealth-browser skill（SKILL.md）补充 V2 + V3 新增命令
 
 ## Backlog
 
@@ -47,6 +54,7 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 
 ## Completed
 
+- V3 实现：3 个 feature（F14 localhost cookie/login 跳过、F15 wait url pattern、F16 screenshot annotate），32 新单元测试，202 总测试 PASS。Tracer findings + code-review 2 important issues 修复（F16 scroll-behavior:smooth 竞态、F15 异常类型过宽）。Smoke test 覆盖 F14（localhost smooth-scroll 页）+ F15（fixture 跨页导航 positive/negative）+ F16（snapshot + annotate 输出 PNG）
 - V2 实现（PR#1）：8 个 feature（refs/wait/dialog/nav/select-check/tab/iframe/batch），170 单元测试
 - V2 code review：2 critical + 3 important 全部修复
 - V2 feature audit：31 验收标准，29 PASS + 2 PARTIAL → 修复后全 PASS
