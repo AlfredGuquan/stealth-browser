@@ -306,3 +306,53 @@ class TestBatchParser:
         parser = build_parser()
         args = parser.parse_args(["batch", "--fast"])
         assert args.fast is True
+
+
+class TestNoCookieFlag:
+    """F14: --no-cookie global flag."""
+
+    def test_default_is_false(self):
+        parser = build_parser()
+        args = parser.parse_args(["open", "https://example.com"])
+        assert args.no_cookie is False
+
+    def test_flag_sets_true(self):
+        parser = build_parser()
+        args = parser.parse_args(["--no-cookie", "open", "https://example.com"])
+        assert args.no_cookie is True
+
+
+class TestWaitUrlParser:
+    """F15: wait url subcommand."""
+
+    def test_wait_url_pattern(self):
+        parser = build_parser()
+        args = parser.parse_args(["wait", "url", "**/success"])
+        assert args.wait_type == "url"
+        assert args.target == "**/success"
+
+    def test_wait_url_full_glob(self):
+        parser = build_parser()
+        args = parser.parse_args(["wait", "url", "https://**.iana.org/**"])
+        assert args.wait_type == "url"
+        assert args.target == "https://**.iana.org/**"
+
+
+class TestScreenshotAnnotateParser:
+    """F16: --annotate flag on screenshot."""
+
+    def test_screenshot_default_no_annotate(self):
+        parser = build_parser()
+        args = parser.parse_args(["screenshot"])
+        assert args.annotate is False
+
+    def test_screenshot_annotate(self):
+        parser = build_parser()
+        args = parser.parse_args(["screenshot", "--annotate"])
+        assert args.annotate is True
+
+    def test_screenshot_annotate_with_path(self):
+        parser = build_parser()
+        args = parser.parse_args(["screenshot", "/tmp/x.png", "--annotate"])
+        assert args.path == "/tmp/x.png"
+        assert args.annotate is True

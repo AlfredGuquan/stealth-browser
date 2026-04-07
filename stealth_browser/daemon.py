@@ -127,6 +127,7 @@ class DaemonHandler:
                     body["url"],
                     site=body.get("site"),
                     timeout=body.get("timeout", 30000),
+                    skip_cookies=body.get("skip_cookies", False),
                 )
                 return {"status": "ok", **result}
 
@@ -160,6 +161,12 @@ class DaemonHandler:
                 return {"status": "ok", "message": msg}
 
             elif command == "screenshot":
+                if body.get("annotate"):
+                    # F16: overlay @eN refs from last snapshot
+                    result = await self.engine.screenshot_annotated(
+                        body.get("path")
+                    )
+                    return {"status": "ok", **result}
                 path = await self.engine.screenshot(body.get("path"))
                 return {"status": "ok", "path": path}
 
@@ -228,6 +235,11 @@ class DaemonHandler:
                 elif wait_type == "timeout":
                     msg = await self.engine.wait_for_timeout(
                         int(body["target"])
+                    )
+                elif wait_type == "url":
+                    # F15: wait for URL to match a glob pattern
+                    msg = await self.engine.wait_for_url_pattern(
+                        body["target"], timeout=timeout
                     )
                 else:
                     return {
