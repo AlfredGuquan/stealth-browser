@@ -406,6 +406,84 @@ def cmd_batch(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+# -- Network recording --
+
+def _format_network_entry(entry: dict, t0: float) -> str:
+    """Format one network log entry as a single line."""
+    elapsed = entry["timestamp"] - t0
+    method = entry.get("method", "?")
+    status = entry.get("status") or "..."
+    rtype = entry.get("resource_type", "?")
+    url = entry.get("url", "")
+    # Truncate long URLs for readability
+    if len(url) > 120:
+        url = url[:117] + "..."
+    return f"[{elapsed:6.1f}s] {method:<4} {status:<3}  {rtype:<12} {url}"
+
+
+def cmd_network(args: argparse.Namespace) -> None:
+    session = _get_session(args)
+    action = args.network_action
+
+    if action is None:
+        print("usage: stealth-browser network {start,stop,list,clear}")
+        print("\nsubcommands:")
+        print("  start                Start recording (mark current position)")
+        print("  stop  [--types ...]  Stop recording, show new requests since start")
+        print("  list  [--types ...]  Show all buffered requests")
+        print("  clear                Clear the network log")
+        print("\n--types filters by resource type (xhr, fetch, document, stylesheet,")
+        print("  image, font, script, media, websocket, etc.). Omit for all types.")
+        sys.exit(0)
+
+    types = getattr(args, "types", None) or None
+
+    if action == "start":
+        result = _send(session, "network", action="start")
+        print(result["message"])
+
+    elif action == "stop":
+        result = _send(session, "network", action="stop", types=types)
+        entries = result.get("entries", [])
+        total = result.get("total", 0)
+        shown = result.get("shown", 0)
+
+        if result.get("note"):
+            print(result["note"])
+            return
+
+        if not entries:
+            print("no requests captured")
+            return
+
+        t0 = entries[0]["timestamp"]
+        print(f"Network requests ({shown} shown, {total} total):\n")
+        for e in entries:
+            print(_format_network_entry(e, t0))
+
+    elif action == "list":
+        result = _send(session, "network", action="list", types=types)
+        entries = result.get("entries", [])
+        total = result.get("total", 0)
+        shown = result.get("shown", 0)
+
+        if not entries:
+            print("network log empty")
+            return
+
+        t0 = entries[0]["timestamp"]
+        print(f"Network requests ({shown} shown, {total} total):\n")
+        for e in entries:
+            print(_format_network_entry(e, t0))
+
+    elif action == "clear":
+        result = _send(session, "network", action="clear")
+        print(result["message"])
+
+    else:
+        error(f"unknown network action: {action}")
+
+
 def _get_session(args: argparse.Namespace) -> str:
     """Determine which session/daemon to talk to."""
     if hasattr(args, "site") and args.site:
@@ -571,6 +649,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_tab_close = tab_sub.add_parser("close", help="Close a tab")
     p_tab_close.add_argument("tab_id", nargs="?", type=int, default=None, help="Tab ID (default: active)")
 
+    # -- Network recording --
+
+    p_net = sub.add_parser("network", help="Network request recording and discovery")
+    net_sub = p_net.add_subparsers(dest="network_action")
+    net_sub.add_parser("start", help="Start recording (mark current position)")
+    p_net_stop = net_sub.add_parser("stop", help="Stop recording, show new requests")
+    p_net_stop.add_argument(
+        "--types", nargs="+", metavar="TYPE",
+        help="Filter by resource type (xhr, fetch, document, stylesheet, image, font, script, media, websocket, ...)",
+    )
+    p_net_list = net_sub.add_parser("list", help="Show all buffered requests")
+    p_net_list.add_argument(
+        "--types", nargs="+", metavar="TYPE",
+        help="Filter by resource type",
+    )
+    net_sub.add_parser("clear", help="Clear the network log")
+
     # -- F13: Batch --
 
     p_batch = sub.add_parser("batch", help="Execute commands from stdin JSON array")
@@ -618,6 +713,7 @@ def main(argv: list[str] | None = None) -> None:
         "forward": cmd_forward,
         "reload": cmd_reload,
         "tab": cmd_tab,
+        "network": cmd_network,
         "batch": cmd_batch,
     }
 

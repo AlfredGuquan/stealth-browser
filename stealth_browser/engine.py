@@ -80,6 +80,11 @@ class StealthEngine:
         self._current_site: str | None = None
         self._headed: bool = False
 
+        # Network recording state
+        self._network_log: list[dict[str, Any]] = []
+        self._network_mark: int | None = None  # index into _network_log when start was called
+        self._network_max: int = 5000  # ring buffer cap
+
     # -- V1 compat properties --
 
     @property
@@ -130,6 +135,7 @@ class StealthEngine:
         page = await self.context.new_page()
         self._register_tab(page)
         self._setup_dialog_handler(page)
+        self._setup_network_handler(page)
         logger.info("browser launched (headed=%s)", headed)
 
     def _register_tab(self, page: Page) -> int:
@@ -160,6 +166,91 @@ class StealthEngine:
                 self._dialog_handled = False
 
         page.on("dialog", _on_dialog)
+
+    def _setup_network_handler(self, page: Page) -> None:
+        """Attach request/response listeners for always-on network recording."""
+        import time as _time
+
+        def _on_request(request) -> None:
+            entry = {
+                "url": request.url,
+                "method": request.method,
+                "resource_type": request.resource_type,
+                "post_data": request.post_data[:2000] if request.post_data else None,
+                "timestamp": _time.time(),
+                "status": None,
+                "content_type": None,
+                "response_size": None,
+            }
+            # Enforce ring buffer cap
+            if len(self._network_log) >= self._network_max:
+                # Shift mark if it exists and we're trimming
+                if self._network_mark is not None:
+                    if self._network_mark > 0:
+                        self._network_mark -= 1
+                    else:
+                        self._network_mark = 0
+                self._network_log.pop(0)
+            self._network_log.append(entry)
+
+        def _on_response(response) -> None:
+            url = response.url
+            # Walk backwards to find the matching request entry
+            for entry in reversed(self._network_log):
+                if entry["url"] == url and entry["status"] is None:
+                    entry["status"] = response.status
+                    headers = response.headers
+                    entry["content_type"] = headers.get("content-type", "")
+                    cl = headers.get("content-length")
+                    if cl and cl.isdigit():
+                        entry["response_size"] = int(cl)
+                    break
+
+        page.on("request", _on_request)
+        page.on("response", _on_response)
+
+    # -- Network recording --
+
+    def network_start(self) -> str:
+        """Mark the current position in the network log."""
+        self._network_mark = len(self._network_log)
+        return "recording started"
+
+    def network_stop(
+        self,
+        types: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return requests captured since start, then clear mark."""
+        if self._network_mark is None:
+            return {"entries": [], "note": "no recording in progress (call network start first)"}
+        entries = self._network_log[self._network_mark:]
+        self._network_mark = None
+        filtered = self._filter_network(entries, types)
+        return {"entries": filtered, "total": len(entries), "shown": len(filtered)}
+
+    def network_list(
+        self,
+        types: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return all buffered requests."""
+        filtered = self._filter_network(self._network_log, types)
+        return {"entries": filtered, "total": len(self._network_log), "shown": len(filtered)}
+
+    def network_clear(self) -> str:
+        """Clear the network log and mark."""
+        self._network_log.clear()
+        self._network_mark = None
+        return "network log cleared"
+
+    @staticmethod
+    def _filter_network(
+        entries: list[dict[str, Any]],
+        types: list[str] | None,
+    ) -> list[dict[str, Any]]:
+        """Filter entries by resource type. None means no filter (return all)."""
+        if not types:
+            return entries
+        return [e for e in entries if e.get("resource_type") in types]
 
     async def shutdown(self) -> None:
         """Close browser and clean up."""
@@ -810,6 +901,7 @@ class StealthEngine:
         page = await self.context.new_page()
         tab_id = self._register_tab(page)
         self._setup_dialog_handler(page)
+        self._setup_network_handler(page)
 
         result: dict[str, Any] = {"tab_id": tab_id}
         if url:

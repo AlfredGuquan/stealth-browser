@@ -330,6 +330,27 @@ class DaemonHandler:
                         await asyncio.sleep(random.uniform(0.2, 0.8))
                 return {"status": "ok", "results": results}
 
+            # -- Network recording --
+
+            elif command == "network":
+                action = body.get("action", "list")
+                types = body.get("types")  # list[str] | None — Claude decides
+
+                if action == "start":
+                    msg = self.engine.network_start()
+                    return {"status": "ok", "message": msg}
+                elif action == "stop":
+                    result = self.engine.network_stop(types=types)
+                    return {"status": "ok", **result}
+                elif action == "list":
+                    result = self.engine.network_list(types=types)
+                    return {"status": "ok", **result}
+                elif action == "clear":
+                    msg = self.engine.network_clear()
+                    return {"status": "ok", "message": msg}
+                else:
+                    return {"status": "error", "error": f"unknown network action: {action}"}
+
             elif command == "close":
                 asyncio.get_event_loop().call_soon(self._schedule_shutdown)
                 return {"status": "ok", "message": "shutting down"}

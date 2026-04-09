@@ -67,6 +67,12 @@ uv run stealth-browser dialog dismiss          # 关闭 dialog
 uv run stealth-browser dialog info             # 查看最近 dialog 信息
 uv run stealth-browser dialog auto-dismiss on  # 开启自动关闭
 
+# 网络录制（always-on，所有请求自动缓冲）
+uv run stealth-browser network start           # 标记录制起点
+uv run stealth-browser network stop [--types xhr fetch]  # 返回起点后的请求
+uv run stealth-browser network list [--types ...]        # 列出所有缓冲请求
+uv run stealth-browser network clear           # 清空缓冲区
+
 # 高级
 uv run stealth-browser eval <js>               # 执行 JavaScript
 uv run stealth-browser batch [--fast]          # 从 stdin 读 JSON 批量执行
