@@ -21,6 +21,10 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 
 ### V2/V3 backlog
 
+- **加载 unpacked Chrome extension（`--load-extension <path>`）**：当前 stealth-browser 的 Patchright launch 不支持加载本地未打包扩展，导致无法测试任何依赖浏览器扩展的端到端流程。触发场景：personal-website F28 视频批注链路要验证 Web Clipper 扩展的 sidepanel.js → background.js → browser-companion WS server 的完整链路，stealth-browser 没法加载 `extension/` 目录就完全无能为力，最后只能退回让用户手动 toggle extension + 看 console。这是 V2 替代 agent-browser 的 hard blocker——agent-browser 有 `--extension <path>`（可重复）和 `AGENT_BROWSER_EXTENSIONS` 环境变量，stealth-browser 缺这块就 cover 不了"测自家扩展"的场景。
+  - 实现方向：Patchright 的 `chromium.launch_persistent_context()` 接受 `args=['--load-extension=/abs/path1,/abs/path2', '--disable-extensions-except=...']`，daemon 启动时若设置了 extension paths 就走 persistent context 路径而不是普通 `launch()`。CLI 支持 `--load-extension <path>` 可重复 + `STEALTH_BROWSER_EXTENSIONS` 环境变量。注意：扩展加载强制 headed 模式（Chromium 限制，headless 不加载扩展），文档要明示这个约束
+  - 技术风险点（spike 必须先做）：1）Patchright/Playwright Chromium build 是否完整支持 `chrome.sidePanel` API——历史上 Playwright Chromium 的 sidePanel 实现有缺失，启 spike 验证 `chrome.sidePanel.open()` 在 Patchright headed 下能不能 work；2）扩展通过 service worker 的 `chrome.runtime.onMessage` 路径在 Patchright 反检测 patch 下是否被破坏；3）Patchright `launch_persistent_context` 与现有 daemon 的 cookie 注入策略冲突（persistent context 自带 profile 目录，cookie 走 profile 不是 `add_cookies()`）——cookie 注入逻辑可能要分支
+  - 验收：能加载 personal-website 的 `extension/` 目录，open 到 alfredgu.com 视频页，能触发 chrome.sidePanel 打开，sidepanel.js 能完整跑起来连上本地 ws server
 - `batch` 命令缺少条件断言：现有 batch 只是顺序执行命令，无法在步骤之间做"等待状态满足"的检查。多步交互测试（翻卡→评分→验证→重复）只能拆成多次独立 Bash 调用，每次 ~6s 进程启动开销累加。建议加入 `wait text/element` 在 batch 中作为隐式断言（超时报错退出），让多步流程一次调用完成
 - `@eN` ref 在 `batch` 中不可用：导航后 ref 失效，但 batch 内部没机会重新 `snapshot -i` 获取新 ref。当前只能在 batch 中用 CSS selector，限制了 ref 系统的适用范围。考虑允许 batch 步骤中插入 `snapshot` 命令并把结果传递给后续步骤，或者支持"navigate 后自动重新生成 refs"
 - 收集真实小红书滑块截图验证 CAPTCHA 模板匹配精度
@@ -38,7 +42,7 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 
 ### P2 — 效率提升（未实现部分）
 
-- [ ] 网络请求读取（`network requests`，检查 API 响应）
+- [x] ~~网络请求读取~~ → Completed [2026-04-09]
 - [ ] Session 命名（同站多 session 支持）
 
 ### P3 — 完整性补全
@@ -62,6 +66,7 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 - V1 code review：4 blocker + 4 important 全部修复
 - QA 验证：Twitter 发帖 PASS，小红书发帖 PASS
 - CJK 输入 bug 修复
+- network recording 命令（start/stop/list/clear） -- always-on request/response 录制，`--types` 按 resource type 过滤（Claude 自选），5000 条环形缓冲区。202 单元测试 PASS + Unsplash 懒加载 e2e 验证 PASS [2026-04-09]
 - stealth-browser skill 创建 + 可用性验证（显式调用 PASS，Cookie 自动注入 PASS）
 - publish skill 重写（agent-browser CDP → stealth-browser）
 - agent-browser 加入 suppress-plugin-skills hook，不再自动路由
