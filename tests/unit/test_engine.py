@@ -132,6 +132,12 @@ class TestFill:
         engine.behavior.fill.assert_called_once_with("#input", "hello")
         assert "5 chars" in result
 
+    @pytest.mark.asyncio
+    async def test_fill_empty_returns_cleared(self, engine):
+        result = await engine.fill("#input", "")
+        engine.behavior.fill.assert_called_once_with("#input", "")
+        assert "cleared" in result
+
 
 class TestEvalJs:
     @pytest.mark.asyncio

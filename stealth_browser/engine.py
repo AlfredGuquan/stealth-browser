@@ -616,7 +616,7 @@ class StealthEngine:
         return f"clicked {selector}"
 
     async def fill(self, selector: str, text: str) -> str:
-        """Fill an input with human-like typing.
+        """Fill an input: select-all + delete existing, then type with human simulation.
 
         Accepts @eN refs or CSS selectors.
         """
@@ -629,6 +629,8 @@ class StealthEngine:
         else:
             locator = await self._get_locator(selector)
             await locator.fill(text)
+        if not text:
+            return f"cleared {selector}"
         return f"filled {selector} with {len(text)} chars"
 
     async def type_text(self, text: str) -> str:

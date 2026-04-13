@@ -59,6 +59,35 @@ class TestFill:
         await behavior.fill("#input", "x")
         behavior._h.click_at.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_fill_clears_before_typing(self, behavior, mock_page):
+        """fill() must select-all + delete existing content before typing."""
+        await behavior.fill("#input", "new")
+        calls = mock_page.keyboard.press.call_args_list
+        keys = [c.args[0] for c in calls]
+        # Must see Meta+a (select all) followed by Backspace/Delete before any content chars
+        assert "Meta+a" in keys
+        meta_a_idx = keys.index("Meta+a")
+        delete_idx = next(
+            i for i, k in enumerate(keys)
+            if k in ("Backspace", "Delete") and i > meta_a_idx
+        )
+        # First content char must come after delete
+        first_content = next(
+            i for i, k in enumerate(keys)
+            if k in ("n", "e", "w") and i > delete_idx
+        )
+        assert first_content > delete_idx
+
+    @pytest.mark.asyncio
+    async def test_fill_empty_string_clears(self, behavior, mock_page):
+        """fill(selector, '') must clear the input (select-all + delete)."""
+        await behavior.fill("#input", "")
+        calls = mock_page.keyboard.press.call_args_list
+        keys = [c.args[0] for c in calls]
+        assert "Meta+a" in keys
+        assert any(k in ("Backspace", "Delete") for k in keys)
+
 
 class TestTypeText:
     @pytest.mark.asyncio

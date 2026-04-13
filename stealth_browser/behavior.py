@@ -66,19 +66,29 @@ class HumanBehavior:
         await self._h.click_at(locator)
 
     async def fill(self, selector: str, text: str) -> None:
-        """Click an input, then type with variable speed and occasional typos.
+        """Click an input, select-all + delete existing content, then type.
 
-        Typo rate: 3-8% of characters get a random wrong char + backspace.
+        Always clears first (Meta+A → Backspace) to replace rather than append.
+        Typo rate: 3-8% of ASCII letters get a random wrong char + backspace.
         """
         locator = self.page.locator(selector)
         # Click to focus
         await self._h.click_at(locator)
         await asyncio.sleep(random.uniform(0.1, 0.3))
 
+        # Select all + delete existing content
+        await self.page.keyboard.press("Meta+a")
+        await asyncio.sleep(random.uniform(0.05, 0.15))
+        await self.page.keyboard.press("Backspace")
+        await asyncio.sleep(random.uniform(0.08, 0.2))
+
+        if not text:
+            return
+
         # Type character by character with variable delays and typos
         typo_rate = random.uniform(0.03, 0.08)
 
-        for i, char in enumerate(text):
+        for char in text:
             # Decide if this character gets a typo (only for ASCII letters)
             if random.random() < typo_rate and char.isascii() and char.isalpha():
                 # Type a wrong character first
