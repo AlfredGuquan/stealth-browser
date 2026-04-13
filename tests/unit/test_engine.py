@@ -451,6 +451,10 @@ class TestSnapshotRefs:
     @pytest.mark.asyncio
     async def test_click_with_ref(self, engine):
         engine._ref_map = {"@e0": {"frame_index": 0, "tag": "button", "text": "ok"}}
+        engine.page.evaluate = AsyncMock(side_effect=[
+            None,   # inject listener
+            True,   # verify: listener fired
+        ])
         result = await engine.click("@e0")
         engine.behavior.click.assert_called_once_with('[data-ref="@e0"]')
         assert "clicked @e0" in result

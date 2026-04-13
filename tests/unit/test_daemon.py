@@ -235,6 +235,7 @@ class TestWaitCommands:
         assert result["status"] == "error"
         err = result["error"]
         assert "element" in err
+        assert "kind" in err  # hint about common mistake
 
 
 class TestDialogCommands:

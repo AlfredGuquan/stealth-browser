@@ -409,6 +409,12 @@ class StealthEngine:
         """
         if not REF_PATTERN.match(selector):
             return  # Only check ref selectors, not raw CSS
+        if frame_index > 0 and frame_index >= len(self.page.frames):
+            raise ValueError(
+                f"frame {frame_index} no longer exists "
+                f"(page has {len(self.page.frames)} frames). "
+                f"Run 'snapshot -i' to refresh refs."
+            )
         frame = self.page if frame_index == 0 else self.page.frames[frame_index]
         matches = await frame.query_selector_all(css)
         if len(matches) > 1:
@@ -620,7 +626,10 @@ class StealthEngine:
                 clicked = await self.page.evaluate(
                     """(css) => {
                         const el = document.querySelector(css);
-                        return el ? !!el.__stealth_clicked : true;
+                        if (!el) return true;
+                        const v = !!el.__stealth_clicked;
+                        delete el.__stealth_clicked;
+                        return v;
                     }""",
                     css,
                 )
