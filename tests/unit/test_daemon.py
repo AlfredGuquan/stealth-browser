@@ -212,6 +212,30 @@ class TestWaitCommands:
         })
         assert result["status"] == "error"
 
+    @pytest.mark.asyncio
+    async def test_wait_unknown_type_lists_valid_types(self, handler):
+        """Error message for unknown wait type must list valid options."""
+        result = await handler.handle({
+            "command": "wait", "type": "bogus"
+        })
+        assert result["status"] == "error"
+        err = result["error"]
+        assert "element" in err
+        assert "text" in err
+        assert "network-idle" in err
+        assert "timeout" in err
+        assert "url" in err
+
+    @pytest.mark.asyncio
+    async def test_wait_missing_type_lists_valid_types(self, handler):
+        """Missing type key (e.g. batch sends 'kind' instead of 'type') → same helpful error."""
+        result = await handler.handle({
+            "command": "wait", "kind": "network-idle"
+        })
+        assert result["status"] == "error"
+        err = result["error"]
+        assert "element" in err
+
 
 class TestDialogCommands:
     """F8: dialog commands via daemon."""

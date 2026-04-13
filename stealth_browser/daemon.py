@@ -242,9 +242,16 @@ class DaemonHandler:
                         body["target"], timeout=timeout
                     )
                 else:
+                    valid = "element, text, network-idle, timeout, url"
+                    hint = ""
+                    if not wait_type:
+                        hint = " (did you use 'kind' instead of 'type'?)"
                     return {
                         "status": "error",
-                        "error": f"unknown wait type: {wait_type}",
+                        "error": (
+                            f"unknown wait type: {wait_type!r}{hint}. "
+                            f"Valid types: {valid}"
+                        ),
                     }
                 return {"status": "ok", "message": msg}
 
