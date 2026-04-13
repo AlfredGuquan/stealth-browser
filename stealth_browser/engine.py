@@ -597,14 +597,14 @@ class StealthEngine:
         # Capture URL before click to detect navigation
         url_before = self.page.url
 
-        # Inject one-shot click listener on target element (main frame only)
+        # Inject one-shot click listener (window-level to survive React re-renders)
         if frame_index == 0:
             await self.page.evaluate(
                 """(css) => {
                     const el = document.querySelector(css);
                     if (el) {
-                        el.__stealth_clicked = false;
-                        el.addEventListener('click', () => { el.__stealth_clicked = true; }, {once: true});
+                        window.__stealth_click_ok = false;
+                        el.addEventListener('click', () => { window.__stealth_click_ok = true; }, {once: true});
                     }
                 }""",
                 css,
@@ -624,14 +624,11 @@ class StealthEngine:
             navigated = url_after != url_before
             if not navigated:
                 clicked = await self.page.evaluate(
-                    """(css) => {
-                        const el = document.querySelector(css);
-                        if (!el) return true;
-                        const v = !!el.__stealth_clicked;
-                        delete el.__stealth_clicked;
+                    """() => {
+                        const v = !!window.__stealth_click_ok;
+                        delete window.__stealth_click_ok;
                         return v;
                     }""",
-                    css,
                 )
                 if not clicked:
                     raise RuntimeError(
