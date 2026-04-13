@@ -401,6 +401,22 @@ class StealthEngine:
             return f'[data-ref="{selector}"]', ref_info["frame_index"]
         return selector, 0  # CSS selector, main frame
 
+    async def _check_ref_unique(self, selector: str, css: str, frame_index: int) -> None:
+        """Verify a ref selector matches exactly one DOM element.
+
+        Raises ValueError with actionable message if duplicates found
+        (e.g. React re-render cloned data-ref attributes).
+        """
+        if not REF_PATTERN.match(selector):
+            return  # Only check ref selectors, not raw CSS
+        frame = self.page if frame_index == 0 else self.page.frames[frame_index]
+        matches = await frame.query_selector_all(css)
+        if len(matches) > 1:
+            raise ValueError(
+                f"{selector} matched {len(matches)} elements — ref is ambiguous. "
+                f"Run 'snapshot -i' to reassign refs, or use a CSS selector."
+            )
+
     async def _get_locator(self, selector: str, *, _resolved: tuple[str, int] | None = None):
         """Get a Playwright locator for a selector (ref or CSS), handling iframes.
 
@@ -570,6 +586,7 @@ class StealthEngine:
             raise RuntimeError("browser not launched")
 
         css, frame_index = self._resolve_selector(selector)
+        await self._check_ref_unique(selector, css, frame_index)
 
         # Capture URL before click to detect navigation
         url_before = self.page.url
@@ -624,6 +641,7 @@ class StealthEngine:
             raise RuntimeError("browser not launched")
 
         css, frame_index = self._resolve_selector(selector)
+        await self._check_ref_unique(selector, css, frame_index)
         if frame_index == 0:
             await self.behavior.fill(css, text)
         else:

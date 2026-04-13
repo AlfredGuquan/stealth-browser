@@ -455,6 +455,28 @@ class TestSnapshotRefs:
         engine.behavior.click.assert_called_once_with('[data-ref="@e0"]')
         assert "clicked @e0" in result
 
+    @pytest.mark.asyncio
+    async def test_click_ref_multi_match_raises(self, engine):
+        """Ref selector matches multiple DOM elements → clear error, not Playwright strict crash."""
+        engine._ref_map = {"@e0": {"frame_index": 0, "tag": "button", "text": "ok"}}
+
+        # Mock page.query_selector_all to return 2 elements
+        engine.page.query_selector_all = AsyncMock(
+            return_value=[MagicMock(), MagicMock()]
+        )
+        with pytest.raises(ValueError, match="matched 2 elements"):
+            await engine.click("@e0")
+
+    @pytest.mark.asyncio
+    async def test_fill_ref_multi_match_raises(self, engine):
+        """fill with duplicate ref → same clear error."""
+        engine._ref_map = {"@e0": {"frame_index": 0, "tag": "input", "text": ""}}
+        engine.page.query_selector_all = AsyncMock(
+            return_value=[MagicMock(), MagicMock()]
+        )
+        with pytest.raises(ValueError, match="matched 2 elements"):
+            await engine.fill("@e0", "text")
+
 
 class TestIframeRefs:
     """F12: iframe ref injection."""
