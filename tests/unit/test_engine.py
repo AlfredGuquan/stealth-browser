@@ -84,8 +84,44 @@ class TestGetInfo:
 class TestClick:
     @pytest.mark.asyncio
     async def test_click(self, engine):
+        # click listener fires → success
+        engine.page.evaluate = AsyncMock(side_effect=[
+            None,   # inject listener
+            True,   # check: listener fired
+        ])
         result = await engine.click("#btn")
         engine.behavior.click.assert_called_once_with("#btn")
+        assert "clicked" in result
+
+    @pytest.mark.asyncio
+    async def test_click_silent_failure(self, engine):
+        """Click dispatched but event not received → raise error."""
+        engine.page.evaluate = AsyncMock(side_effect=[
+            None,   # inject listener
+            False,  # check: listener did NOT fire
+        ])
+        # URL unchanged → no navigation either
+        engine.page.url = "https://example.com/"
+        with pytest.raises(RuntimeError, match="click not received"):
+            await engine.click("#btn")
+
+    @pytest.mark.asyncio
+    async def test_click_navigated_skips_verify(self, engine):
+        """Click triggers navigation (URL changed) → success even if listener missed."""
+        url_before = "https://example.com/"
+        url_after = "https://example.com/new-page"
+        engine.page.url = url_before
+
+        async def do_click(css):
+            # Simulate navigation as side effect of click
+            engine.page.url = url_after
+
+        engine.behavior.click = AsyncMock(side_effect=do_click)
+        engine.page.evaluate = AsyncMock(side_effect=[
+            None,   # inject listener
+            False,  # listener didn't fire (page navigated, listener lost)
+        ])
+        result = await engine.click("#link")
         assert "clicked" in result
 
 

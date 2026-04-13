@@ -564,11 +564,29 @@ class StealthEngine:
         """Click an element with human behavior simulation.
 
         Accepts @eN refs or CSS selectors.
+        Post-verifies that the click event was received or a navigation occurred.
         """
         if self.behavior is None:
             raise RuntimeError("browser not launched")
 
         css, frame_index = self._resolve_selector(selector)
+
+        # Capture URL before click to detect navigation
+        url_before = self.page.url
+
+        # Inject one-shot click listener on target element (main frame only)
+        if frame_index == 0:
+            await self.page.evaluate(
+                """(css) => {
+                    const el = document.querySelector(css);
+                    if (el) {
+                        el.__stealth_clicked = false;
+                        el.addEventListener('click', () => { el.__stealth_clicked = true; }, {once: true});
+                    }
+                }""",
+                css,
+            )
+
         if frame_index == 0:
             await self.behavior.click(css)
         else:
@@ -576,6 +594,25 @@ class StealthEngine:
             locator = await self._get_locator(selector)
             await locator.click()
         await self.page.wait_for_timeout(500)
+
+        # Post-verify: check listener fired or URL changed (navigation)
+        if frame_index == 0:
+            url_after = self.page.url
+            navigated = url_after != url_before
+            if not navigated:
+                clicked = await self.page.evaluate(
+                    """(css) => {
+                        const el = document.querySelector(css);
+                        return el ? !!el.__stealth_clicked : true;
+                    }""",
+                    css,
+                )
+                if not clicked:
+                    raise RuntimeError(
+                        f"click not received by {selector} — element may be "
+                        f"obscured by an overlay or click coordinates missed"
+                    )
+
         return f"clicked {selector}"
 
     async def fill(self, selector: str, text: str) -> str:
