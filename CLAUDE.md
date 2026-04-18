@@ -86,22 +86,19 @@ uv run python -m pytest tests/unit/ -q         # 运行单元测试
 
 Conventional commits. 不 `git add -A`，只 stage 当前变更涉及的文件。
 
-<important if="modifying engine.py or daemon.py">
+**modifying engine.py or daemon.py:**
 - 必须用 `patchright.async_api`，不能用 sync API（greenlet 不能跨线程）
 - 浏览器启动必须 `channel='chrome'`（系统 Chrome），headless UA 必须显式覆盖
 - Cookie 注入在 `new_context()` 之后、首次 `goto()` 之前
-</important>
 
-<important if="modifying behavior.py">
+**modifying behavior.py:**
 - 不使用 `undetected_launch()`（强制 headed），直接 `Humanization(page, config)` 构造
 - 非 ASCII 字符（中文等）用 `keyboard.insert_text()`，不用 `keyboard.press()`
 - 滑块拖拽用 `generate_bezier_points()` + 手动 mouse 操作，不用 `drag_to()`
-</important>
 
-<important if="modifying cookies.py">
+**modifying cookies.py:**
 - pycookiecheat `as_cookies=True` 返回自定义 dataclass：`host_key`（非 `domain`）、`expires_utc`（Chrome 微秒时间戳，需 `/ 1e6 - 11644473600` 转 Unix 秒）、`is_secure`（非 `secure`）
 - site 名必须经过 `_validate_name()` 清洗，防路径遍历
-</important>
 
 ### Learned Constraints
 
