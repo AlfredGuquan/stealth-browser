@@ -771,3 +771,118 @@ class TestMultiTab:
         engine.context.new_page = AsyncMock(return_value=new_page)
         await engine.tab_create()
         assert engine._ref_map == {}
+
+
+class TestExtensions:
+    """Chrome extension loading via --extension flag."""
+
+    @pytest.mark.asyncio
+    async def test_extensions_require_headed(self):
+        e = StealthEngine()
+        with pytest.raises(ValueError, match="extensions require headed"):
+            await e.launch(headed=False, extensions=["/tmp/fake-ext"])
+
+    @pytest.mark.asyncio
+    async def test_extensions_use_persistent_context(self, tmp_path):
+        ext_dir = tmp_path / "ext"
+        ext_dir.mkdir()
+        (ext_dir / "manifest.json").write_text(
+            '{"name":"x","version":"0","manifest_version":3}'
+        )
+
+        mock_pw = MagicMock()
+        mock_page = AsyncMock()
+        mock_page.url = "about:blank"
+        mock_page.on = MagicMock()
+        mock_context = AsyncMock()
+        mock_context.pages = [mock_page]
+        mock_context.new_page = AsyncMock(return_value=mock_page)
+        mock_context.browser = MagicMock()
+        mock_context.browser.is_connected.return_value = True
+        mock_pw.chromium.launch_persistent_context = AsyncMock(
+            return_value=mock_context
+        )
+        mock_pw.chromium.launch = AsyncMock()  # not expected to be called
+
+        ap_ctx = MagicMock()
+        ap_ctx.start = AsyncMock(return_value=mock_pw)
+
+        with patch("stealth_browser.engine.async_playwright", return_value=ap_ctx), \
+             patch("stealth_browser.engine.os.path.exists", return_value=True):
+            e = StealthEngine()
+            await e.launch(headed=True, extensions=[str(ext_dir)])
+
+        mock_pw.chromium.launch_persistent_context.assert_called_once()
+        mock_pw.chromium.launch.assert_not_called()
+        call_args = mock_pw.chromium.launch_persistent_context.call_args
+        # No channel -> uses bundled Chrome for Testing.
+        # Branded Chrome blocks --load-extension (Chrome 137+ anti-malware).
+        assert "channel" not in call_args.kwargs or call_args.kwargs["channel"] is None
+        assert call_args.kwargs["headless"] is False
+        cmd_args = call_args.kwargs["args"]
+        ext_path_str = str(ext_dir)
+        assert any(f"--load-extension={ext_path_str}" in a for a in cmd_args)
+        assert any(f"--disable-extensions-except={ext_path_str}" in a for a in cmd_args)
+
+    @pytest.mark.asyncio
+    async def test_multiple_extensions_comma_joined(self, tmp_path):
+        ext1 = tmp_path / "a"
+        ext2 = tmp_path / "b"
+        for p in (ext1, ext2):
+            p.mkdir()
+            (p / "manifest.json").write_text(
+                '{"name":"x","version":"0","manifest_version":3}'
+            )
+
+        mock_pw = MagicMock()
+        mock_page = AsyncMock()
+        mock_page.url = "about:blank"
+        mock_page.on = MagicMock()
+        mock_context = AsyncMock()
+        mock_context.pages = [mock_page]
+        mock_context.new_page = AsyncMock(return_value=mock_page)
+        mock_context.browser = MagicMock()
+        mock_context.browser.is_connected.return_value = True
+        mock_pw.chromium.launch_persistent_context = AsyncMock(
+            return_value=mock_context
+        )
+
+        ap_ctx = MagicMock()
+        ap_ctx.start = AsyncMock(return_value=mock_pw)
+
+        with patch("stealth_browser.engine.async_playwright", return_value=ap_ctx), \
+             patch("stealth_browser.engine.os.path.exists", return_value=True):
+            e = StealthEngine()
+            await e.launch(headed=True, extensions=[str(ext1), str(ext2)])
+
+        call_args = mock_pw.chromium.launch_persistent_context.call_args
+        cmd_args = call_args.kwargs["args"]
+        joined = f"{ext1},{ext2}"
+        assert any(f"--load-extension={joined}" in a for a in cmd_args)
+        assert any(f"--disable-extensions-except={joined}" in a for a in cmd_args)
+
+    @pytest.mark.asyncio
+    async def test_no_extensions_uses_regular_launch(self):
+        """Regression: without extensions, launch path unchanged."""
+        mock_pw = MagicMock()
+        mock_browser = MagicMock()
+        mock_browser.is_connected = MagicMock(return_value=True)
+        mock_page = AsyncMock()
+        mock_page.url = "about:blank"
+        mock_page.on = MagicMock()
+        mock_context = AsyncMock()
+        mock_context.new_page = AsyncMock(return_value=mock_page)
+        mock_browser.new_context = AsyncMock(return_value=mock_context)
+        mock_pw.chromium.launch = AsyncMock(return_value=mock_browser)
+        mock_pw.chromium.launch_persistent_context = AsyncMock()
+
+        ap_ctx = MagicMock()
+        ap_ctx.start = AsyncMock(return_value=mock_pw)
+
+        with patch("stealth_browser.engine.async_playwright", return_value=ap_ctx), \
+             patch("stealth_browser.engine.os.path.exists", return_value=True):
+            e = StealthEngine()
+            await e.launch(headed=False)
+
+        mock_pw.chromium.launch.assert_called_once()
+        mock_pw.chromium.launch_persistent_context.assert_not_called()

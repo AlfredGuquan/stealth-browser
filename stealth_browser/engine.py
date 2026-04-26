@@ -108,8 +108,21 @@ class StealthEngine:
 
     # -- Lifecycle --
 
-    async def launch(self, *, headed: bool = False) -> None:
-        """Launch the browser with anti-detection configuration."""
+    async def launch(
+        self,
+        *,
+        headed: bool = False,
+        extensions: list[str] | None = None,
+    ) -> None:
+        """Launch the browser with anti-detection configuration.
+
+        When `extensions` is provided, Chrome is launched via
+        launch_persistent_context with --load-extension flags.
+        Chrome requires headed mode for extensions; headless is rejected.
+        """
+        if extensions and not headed:
+            raise ValueError("extensions require headed mode (Chrome restriction)")
+
         self._headed = headed
         self.playwright = await async_playwright().start()
 
@@ -120,23 +133,52 @@ class StealthEngine:
                 "Install Chrome from https://www.google.com/chrome/"
             )
 
-        self.browser = await self.playwright.chromium.launch(
-            headless=not headed,
-            channel="chrome",
-        )
+        if extensions:
+            ext_arg = ",".join(extensions)
+            user_data_dir = Path.home() / ".stealth-browser" / "ext-profile"
+            user_data_dir.mkdir(parents=True, exist_ok=True)
+            # Branded Google Chrome blocks --load-extension and
+            # --disable-extensions-except for anti-malware since Chrome 137+:
+            #   "WARNING: --load-extension is not allowed in Google Chrome"
+            # We fall back to the bundled Chrome for Testing (channel=None)
+            # which accepts those switches. Anti-detection stealth is
+            # weaker in CFT (stealth-browser's 11-check gap), but extension
+            # testing doesn't need it.
+            self.context = await self.playwright.chromium.launch_persistent_context(
+                str(user_data_dir),
+                headless=False,
+                user_agent=get_chrome_ua(),
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+                args=[
+                    f"--disable-extensions-except={ext_arg}",
+                    f"--load-extension={ext_arg}",
+                ],
+            )
+            self.browser = self.context.browser
+        else:
+            self.browser = await self.playwright.chromium.launch(
+                headless=not headed,
+                channel="chrome",
+            )
 
-        self.context = await self.browser.new_context(
-            user_agent=get_chrome_ua(),
-            viewport={"width": 1920, "height": 1080},
-            locale="en-US",
-        )
+            self.context = await self.browser.new_context(
+                user_agent=get_chrome_ua(),
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+            )
 
-        # Create initial tab
-        page = await self.context.new_page()
+        # Create initial tab (reuse existing page in persistent context if present)
+        existing_pages = list(self.context.pages) if extensions else []
+        page = existing_pages[0] if existing_pages else await self.context.new_page()
         self._register_tab(page)
         self._setup_dialog_handler(page)
         self._setup_network_handler(page)
-        logger.info("browser launched (headed=%s)", headed)
+        logger.info(
+            "browser launched (headed=%s, extensions=%d)",
+            headed,
+            len(extensions) if extensions else 0,
+        )
 
     def _register_tab(self, page: Page) -> int:
         """Register a new page as a tab. Returns its tab_id."""

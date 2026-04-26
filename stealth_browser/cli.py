@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Any
 from urllib.parse import urlparse
@@ -821,9 +822,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_extensions_from_env(extensions: list[str] | None) -> list[str] | None:
+    """Fall back to STEALTH_BROWSER_EXTENSIONS env when --extension not given.
+
+    Explicit CLI flag wins; env is only consulted when no flag was provided.
+    Empty entries (from leading/trailing/double `os.pathsep`) are dropped.
+    """
+    if extensions:
+        return extensions
+    env_val = os.environ.get("STEALTH_BROWSER_EXTENSIONS")
+    if not env_val:
+        return extensions
+    parts = [p for p in env_val.split(os.pathsep) if p]
+    return parts or extensions
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+    args.extensions = _resolve_extensions_from_env(getattr(args, "extensions", None))
 
     if args.verbose:
         import logging

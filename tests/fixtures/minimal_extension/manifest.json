@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Stealth E2E Marker",
+  "version": "0.0.1",
+  "description": "Minimal extension for stealth-browser E2E tests. Injects a DOM marker on every page.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_end",
+      "all_frames": false
+    }
+  ]
+}

@@ -384,6 +384,55 @@ class TestExtensionFlag:
         assert args.extensions == ["/tmp/ext1", "/tmp/ext2"]
 
 
+class TestExtensionsEnvFallback:
+    """STEALTH_BROWSER_EXTENSIONS env: used only when --extension flag absent.
+
+    Explicit CLI flag wins over env to keep one-off invocations predictable
+    even when a per-shell default is configured.
+    """
+
+    def test_env_used_when_flag_absent(self, monkeypatch):
+        from stealth_browser.cli import _resolve_extensions_from_env
+
+        monkeypatch.setenv("STEALTH_BROWSER_EXTENSIONS", "/tmp/ext-a")
+        assert _resolve_extensions_from_env(None) == ["/tmp/ext-a"]
+
+    def test_env_pathsep_splits_multiple(self, monkeypatch):
+        import os
+        from stealth_browser.cli import _resolve_extensions_from_env
+
+        monkeypatch.setenv(
+            "STEALTH_BROWSER_EXTENSIONS",
+            f"/tmp/ext-a{os.pathsep}/tmp/ext-b",
+        )
+        assert _resolve_extensions_from_env(None) == ["/tmp/ext-a", "/tmp/ext-b"]
+
+    def test_flag_overrides_env(self, monkeypatch):
+        from stealth_browser.cli import _resolve_extensions_from_env
+
+        monkeypatch.setenv("STEALTH_BROWSER_EXTENSIONS", "/tmp/from-env")
+        assert _resolve_extensions_from_env(["/tmp/from-flag"]) == ["/tmp/from-flag"]
+
+    def test_no_env_no_flag_stays_none(self, monkeypatch):
+        from stealth_browser.cli import _resolve_extensions_from_env
+
+        monkeypatch.delenv("STEALTH_BROWSER_EXTENSIONS", raising=False)
+        assert _resolve_extensions_from_env(None) is None
+
+    def test_env_empty_string_treated_as_unset(self, monkeypatch):
+        from stealth_browser.cli import _resolve_extensions_from_env
+
+        monkeypatch.setenv("STEALTH_BROWSER_EXTENSIONS", "")
+        assert _resolve_extensions_from_env(None) is None
+
+    def test_env_all_separators_falls_back(self, monkeypatch):
+        import os
+        from stealth_browser.cli import _resolve_extensions_from_env
+
+        monkeypatch.setenv("STEALTH_BROWSER_EXTENSIONS", os.pathsep * 3)
+        assert _resolve_extensions_from_env(None) is None
+
+
 class TestEnsureDaemonExtensions:
     """_ensure_daemon auto-upgrades headed=True when extensions present."""
 
