@@ -25,7 +25,6 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
   - 实现方向：Patchright 的 `chromium.launch_persistent_context()` 接受 `args=['--load-extension=/abs/path1,/abs/path2', '--disable-extensions-except=...']`，daemon 启动时若设置了 extension paths 就走 persistent context 路径而不是普通 `launch()`。CLI 支持 `--load-extension <path>` 可重复 + `STEALTH_BROWSER_EXTENSIONS` 环境变量。注意：扩展加载强制 headed 模式（Chromium 限制，headless 不加载扩展），文档要明示这个约束
   - 技术风险点（spike 必须先做）：1）Patchright/Playwright Chromium build 是否完整支持 `chrome.sidePanel` API——历史上 Playwright Chromium 的 sidePanel 实现有缺失，启 spike 验证 `chrome.sidePanel.open()` 在 Patchright headed 下能不能 work；2）扩展通过 service worker 的 `chrome.runtime.onMessage` 路径在 Patchright 反检测 patch 下是否被破坏；3）Patchright `launch_persistent_context` 与现有 daemon 的 cookie 注入策略冲突（persistent context 自带 profile 目录，cookie 走 profile 不是 `add_cookies()`）——cookie 注入逻辑可能要分支
   - 验收：能加载 personal-website 的 `extension/` 目录，open 到 alfredgu.com 视频页，能触发 chrome.sidePanel 打开，sidepanel.js 能完整跑起来连上本地 ws server
-- `batch` 命令缺少条件断言：现有 batch 只是顺序执行命令，无法在步骤之间做"等待状态满足"的检查。多步交互测试（翻卡→评分→验证→重复）只能拆成多次独立 Bash 调用，每次 ~6s 进程启动开销累加。建议加入 `wait text/element` 在 batch 中作为隐式断言（超时报错退出），让多步流程一次调用完成
 - `@eN` ref 在 `batch` 中不可用：导航后 ref 失效，但 batch 内部没机会重新 `snapshot -i` 获取新 ref。当前只能在 batch 中用 CSS selector，限制了 ref 系统的适用范围。考虑允许 batch 步骤中插入 `snapshot` 命令并把结果传递给后续步骤，或者支持"navigate 后自动重新生成 refs"
 - 收集真实小红书滑块截图验证 CAPTCHA 模板匹配精度
 - 更新 stealth-browser skill（SKILL.md）补充 V2 + V3 新增命令
@@ -55,6 +54,7 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 
 ## Completed
 
+- 内置断言机制（assert text/element）：engine 加 assert_text / assert_element（document.body.innerText.includes / querySelectorAll；不等待，可与 wait 组合），daemon assert dispatch + 失败映射 ASSERTION_FAILED；CLI `assert <kind> <target>` 命令；batch 自动 short-circuit。263 单测 PASS（新增 16：11 assertions + 5 cli）。多步交互测试不再需要"截图 → 目视判定"，结构化断言。[2026-04-26]
 - scroll 后自动返回 visible_text：engine.visible_text() 用 TreeWalker + Range.getBoundingClientRect 抓 viewport 内文本节点，1500 字上限，slicing 在 JS 端避免 marshalling 全文回 Python。daemon scroll handler 透传到响应；cli 输出 `<message>\n---\n<text>`，空文本时不打分隔符。247 单测 PASS（新增 7：3 visible_text + 1 daemon + 3 cli）。Agent 不再需要 scroll → screenshot → Read 三回合判断 viewport 状态。[2026-04-26]
 - 错误消息结构化（F5 三项）：utils.error 输出 4 行 (error/code/retryable/fix)；exit code 分档（USAGE→2、AUTH_EXPIRED→5、其他→1）；cmd_open login_redirect 走 error()，失败路径不污染 stdout。daemon 加 `_err()` helper，10 处错误响应迁移；cli 14 处 error() 调用补 code/retryable/fix；engine→daemon 异常自动判 AUTH_EXPIRED。240 单测 PASS（新增 14：6 utils + 8 daemon + 6 cli），e2e NO_SESSION 验证 4 行输出 + exit 1。[2026-04-26]
 - Agent 反馈修复（4 fix）：click post-verify 检测静默失败、fill Meta+A→Delete 替换而非追加、ref 重复匹配 graceful handling、batch wait 错误消息列出合法 type。211 单元测试 PASS + code review + e2e 验证（example.com 导航 click + localhost fill 替换）[2026-04-13]

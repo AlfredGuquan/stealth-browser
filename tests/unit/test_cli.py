@@ -2,7 +2,7 @@
 
 import argparse
 import pytest
-from stealth_browser.cli import build_parser, _site_from_url, _send, cmd_scroll
+from stealth_browser.cli import build_parser, _site_from_url, _send, cmd_scroll, cmd_assert
 
 
 class TestSiteFromUrl:
@@ -555,3 +555,53 @@ class TestScrollOutput:
         cmd_scroll(argparse.Namespace(direction="down", amount=2, site=None))
         out = capsys.readouterr().out.strip()
         assert out == "scrolled down 2 steps"
+
+
+class TestAssertParser:
+    def test_text(self):
+        args = build_parser().parse_args(["assert", "text", "Hello world"])
+        assert args.command == "assert"
+        assert args.kind == "text"
+        assert args.target == "Hello world"
+
+    def test_element_with_ref(self):
+        args = build_parser().parse_args(["assert", "element", "@e3"])
+        assert args.kind == "element"
+        assert args.target == "@e3"
+
+    def test_invalid_kind_rejected(self):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["assert", "bogus", "X"])
+
+
+class TestCmdAssert:
+    def _stub_send(self, monkeypatch, response: dict):
+        from stealth_browser import cli as cli_mod
+        monkeypatch.setattr(cli_mod, "_get_session", lambda args: "test")
+        monkeypatch.setattr(cli_mod, "send_command", lambda *a, **kw: response)
+
+    def test_pass_prints_message(self, monkeypatch, capsys):
+        self._stub_send(monkeypatch, {
+            "status": "ok",
+            "passed": True,
+            "message": "PASS: text 'Hello'",
+        })
+        cmd_assert(argparse.Namespace(kind="text", target="Hello", site=None))
+        out = capsys.readouterr().out.strip()
+        assert "PASS" in out
+
+    def test_fail_exits_1_with_assertion_failed_code(self, monkeypatch, capsys):
+        self._stub_send(monkeypatch, {
+            "status": "error",
+            "error": "FAIL: text 'Nope' not present",
+            "code": "ASSERTION_FAILED",
+            "retryable": False,
+            "fix": "verify 'Nope' exists",
+            "passed": False,
+        })
+        with pytest.raises(SystemExit) as exc:
+            cmd_assert(argparse.Namespace(kind="text", target="Nope", site=None))
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "code: ASSERTION_FAILED" in err
+        assert "FAIL" in err

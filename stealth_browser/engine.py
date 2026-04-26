@@ -703,6 +703,38 @@ class StealthEngine:
         )
         return await self.page.evaluate(js)
 
+    async def assert_text(self, text: str) -> dict[str, Any]:
+        """Check whether `text` appears anywhere in document.body.innerText.
+
+        Returns {"passed": bool, "text": text}. Does not wait — composes with
+        an explicit `wait text` step if the agent wants to wait.
+        """
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        import json as _json
+        js = (
+            "() => (document.body && document.body.innerText || '').includes("
+            + _json.dumps(text)
+            + ")"
+        )
+        found = await self.page.evaluate(js)
+        return {"passed": bool(found), "text": text}
+
+    async def assert_element(self, selector: str) -> dict[str, Any]:
+        """Check whether `selector` (CSS or @eN ref) matches at least one element.
+
+        Returns {"passed": bool, "selector": selector, "count": int}. Does not
+        wait. Refs (@eN) resolve via the data-ref attribute selector.
+        """
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        import json as _json
+        css = f'[data-ref="{selector}"]' if selector.startswith("@e") else selector
+        count = await self.page.evaluate(
+            "(s) => document.querySelectorAll(s).length", css
+        )
+        return {"passed": bool(count), "selector": selector, "count": int(count)}
+
     async def upload(self, selector: str, file_path: str) -> str:
         """Upload a file to a file input element."""
         if self.page is None:

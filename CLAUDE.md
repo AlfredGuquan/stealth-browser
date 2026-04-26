@@ -55,6 +55,10 @@ uv run stealth-browser wait text <text>        # 等待文本出现
 uv run stealth-browser wait network-idle       # 等待网络空闲
 uv run stealth-browser wait <ms>               # 等待毫秒数
 
+# 断言（PASS=exit 0；FAIL=exit 1 + code:ASSERTION_FAILED；可在 batch 中使用）
+uv run stealth-browser assert text <text>      # 断言文本存在于页面
+uv run stealth-browser assert element <sel>    # 断言元素存在（@eN 或 CSS）
+
 # Tab 管理
 uv run stealth-browser tab list                # 列出所有 tab
 uv run stealth-browser tab create [url]        # 新建 tab

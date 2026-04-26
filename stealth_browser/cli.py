@@ -175,6 +175,14 @@ def cmd_upload(args: argparse.Namespace) -> None:
     print(result["message"])
 
 
+def cmd_assert(args: argparse.Namespace) -> None:
+    """assert text/element — PASS prints to stdout, FAIL surfaces via _send (exit 1)."""
+    session = _get_session(args)
+    # On FAIL, daemon returns status=error code=ASSERTION_FAILED; _send exits.
+    result = _send(session, "assert", kind=args.kind, target=args.target)
+    print(result["message"])
+
+
 def cmd_screenshot(args: argparse.Namespace) -> None:
     session = _get_session(args)
     annotate = bool(getattr(args, "annotate", False))
@@ -742,6 +750,17 @@ def build_parser() -> argparse.ArgumentParser:
              "or URL glob pattern (for url)"
     )
 
+    # assert text/element — structured PASS/FAIL (exit 1 with code:ASSERTION_FAILED on miss)
+    p_assert = sub.add_parser(
+        "assert", help="Assert text or element is present (PASS/FAIL with structured exit)"
+    )
+    p_assert.add_argument(
+        "kind", choices=["text", "element"], help="What to assert"
+    )
+    p_assert.add_argument(
+        "target", help="Text string (for text) or @eN ref/CSS selector (for element)"
+    )
+
     # -- F8: Dialog --
 
     p_dialog = sub.add_parser("dialog", help="Handle browser dialogs (alert/confirm/prompt)")
@@ -833,6 +852,7 @@ def main(argv: list[str] | None = None) -> None:
         "check": cmd_check,
         "uncheck": cmd_uncheck,
         "wait": cmd_wait,
+        "assert": cmd_assert,
         "dialog": cmd_dialog,
         "back": cmd_back,
         "forward": cmd_forward,

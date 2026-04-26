@@ -187,6 +187,39 @@ class DaemonHandler:
                 msg = await self.engine.upload(body["selector"], body["file"])
                 return {"status": "ok", "message": msg}
 
+            elif command == "assert":
+                kind = body.get("kind") or body.get("type")
+                target = body.get("target", "")
+                if kind == "text":
+                    info = await self.engine.assert_text(target)
+                elif kind == "element":
+                    info = await self.engine.assert_element(target)
+                else:
+                    return _err(
+                        f"unknown assert kind: {kind!r}. Valid: text, element",
+                        code="USAGE",
+                        retryable=False,
+                        fix="use one of: text, element",
+                    )
+                if info.pop("passed", False):
+                    return {
+                        "status": "ok",
+                        "message": f"PASS: {kind} {target!r}",
+                        "passed": True,
+                        **info,
+                    }
+                # Failed assertion is structured as an error so batch
+                # short-circuits and CLI exits non-zero, but with a distinct
+                # code so agents can tell it apart from runtime errors.
+                return _err(
+                    f"FAIL: {kind} {target!r} not present",
+                    code="ASSERTION_FAILED",
+                    retryable=False,
+                    fix=f"verify {target!r} exists; consider `wait {kind}` first",
+                    passed=False,
+                    **info,
+                )
+
             elif command == "screenshot":
                 if body.get("annotate"):
                     # F16: overlay @eN refs from last snapshot
