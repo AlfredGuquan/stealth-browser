@@ -178,7 +178,10 @@ class DaemonHandler:
                     body.get("direction", "down"),
                     body.get("amount", 3),
                 )
-                return {"status": "ok", "message": msg}
+                # After-scroll viewport text — saves an extra screenshot+Read
+                # round-trip when an agent just wants to know what's now on screen.
+                visible = await self.engine.visible_text()
+                return {"status": "ok", "message": msg, "visible_text": visible}
 
             elif command == "upload":
                 msg = await self.engine.upload(body["selector"], body["file"])

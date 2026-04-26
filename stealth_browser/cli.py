@@ -163,6 +163,10 @@ def cmd_scroll(args: argparse.Namespace) -> None:
         session, "scroll", direction=args.direction, amount=args.amount
     )
     print(result["message"])
+    visible = (result.get("visible_text") or "").strip()
+    if visible:
+        print("---")
+        print(visible)
 
 
 def cmd_upload(args: argparse.Namespace) -> None:

@@ -55,6 +55,7 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 
 ## Completed
 
+- scroll 后自动返回 visible_text：engine.visible_text() 用 TreeWalker + Range.getBoundingClientRect 抓 viewport 内文本节点，1500 字上限，slicing 在 JS 端避免 marshalling 全文回 Python。daemon scroll handler 透传到响应；cli 输出 `<message>\n---\n<text>`，空文本时不打分隔符。247 单测 PASS（新增 7：3 visible_text + 1 daemon + 3 cli）。Agent 不再需要 scroll → screenshot → Read 三回合判断 viewport 状态。[2026-04-26]
 - 错误消息结构化（F5 三项）：utils.error 输出 4 行 (error/code/retryable/fix)；exit code 分档（USAGE→2、AUTH_EXPIRED→5、其他→1）；cmd_open login_redirect 走 error()，失败路径不污染 stdout。daemon 加 `_err()` helper，10 处错误响应迁移；cli 14 处 error() 调用补 code/retryable/fix；engine→daemon 异常自动判 AUTH_EXPIRED。240 单测 PASS（新增 14：6 utils + 8 daemon + 6 cli），e2e NO_SESSION 验证 4 行输出 + exit 1。[2026-04-26]
 - Agent 反馈修复（4 fix）：click post-verify 检测静默失败、fill Meta+A→Delete 替换而非追加、ref 重复匹配 graceful handling、batch wait 错误消息列出合法 type。211 单元测试 PASS + code review + e2e 验证（example.com 导航 click + localhost fill 替换）[2026-04-13]
 - V3 实现：3 个 feature（F14 localhost cookie/login 跳过、F15 wait url pattern、F16 screenshot annotate），32 新单元测试，202 总测试 PASS。Tracer findings + code-review 2 important issues 修复（F16 scroll-behavior:smooth 竞态、F15 异常类型过宽）。Smoke test 覆盖 F14（localhost smooth-scroll 页）+ F15（fixture 跨页导航 positive/negative）+ F16（snapshot + annotate 输出 PNG）

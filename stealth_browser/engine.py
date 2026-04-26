@@ -671,6 +671,38 @@ class StealthEngine:
         await self.behavior.scroll(direction, amount)
         return f"scrolled {direction} {amount} steps"
 
+    async def visible_text(self, max_chars: int = 1500) -> str:
+        """Extract text content currently inside the viewport.
+
+        Used after scroll so agents see what's now on screen without an extra
+        screenshot+Read round-trip. Walks text nodes, keeps those whose
+        bounding rect overlaps [0, innerHeight). Slicing happens in the
+        evaluated JS to avoid pulling the whole document into Python.
+        """
+        if self.page is None:
+            raise RuntimeError("browser not launched")
+        js = (
+            "() => {"
+            f" const MAX = {int(max_chars)};"
+            " const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);"
+            " const out = []; let total = 0;"
+            " const VIEW_H = window.innerHeight; let n;"
+            " while ((n = walker.nextNode())) {"
+            "  const text = (n.textContent || '').trim();"
+            "  if (!text) continue;"
+            "  const range = document.createRange();"
+            "  range.selectNodeContents(n);"
+            "  const rect = range.getBoundingClientRect();"
+            "  if (rect.bottom > 0 && rect.top < VIEW_H && rect.width > 0) {"
+            "   out.push(text); total += text.length + 1;"
+            "   if (total >= MAX) break;"
+            "  }"
+            " }"
+            " return out.join('\\n').slice(0, MAX);"
+            "}"
+        )
+        return await self.page.evaluate(js)
+
     async def upload(self, selector: str, file_path: str) -> str:
         """Upload a file to a file input element."""
         if self.page is None:

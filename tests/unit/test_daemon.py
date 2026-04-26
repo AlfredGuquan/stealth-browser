@@ -54,6 +54,7 @@ def mock_engine():
     engine.tab_switch = MagicMock(return_value="switched to tab 2")
     engine.tab_close = AsyncMock(return_value="closed tab 1")
     engine.set_auto_dismiss = MagicMock(return_value="dialog auto-dismiss on")
+    engine.visible_text = AsyncMock(return_value="Hello world\nIn-viewport line")
     return engine
 
 
@@ -98,6 +99,16 @@ class TestDaemonHandler:
             "command": "scroll", "direction": "down", "amount": 2
         })
         assert result["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_scroll_includes_visible_text(self, handler, mock_engine):
+        """Scroll response must carry visible_text so agents can skip a screenshot+Read round-trip."""
+        result = await handler.handle({
+            "command": "scroll", "direction": "down", "amount": 2
+        })
+        assert "visible_text" in result
+        assert result["visible_text"] == "Hello world\nIn-viewport line"
+        mock_engine.visible_text.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_screenshot(self, handler):

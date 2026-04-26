@@ -1,7 +1,8 @@
 """Unit tests for stealth_browser.cli."""
 
+import argparse
 import pytest
-from stealth_browser.cli import build_parser, _site_from_url, _send
+from stealth_browser.cli import build_parser, _site_from_url, _send, cmd_scroll
 
 
 class TestSiteFromUrl:
@@ -509,3 +510,48 @@ class TestSendStructuredErrors:
             _send("example.com", "click", selector="#a")
         captured = capsys.readouterr()
         assert captured.out == ""
+
+
+class TestScrollOutput:
+    """cmd_scroll prints message + '---' + visible_text on stdout."""
+
+    def _stub_send(self, monkeypatch, response: dict):
+        from stealth_browser import cli as cli_mod
+        monkeypatch.setattr(cli_mod, "_get_session", lambda args: "test")
+        monkeypatch.setattr(cli_mod, "send_command", lambda *a, **kw: response)
+
+    def test_emits_message_then_separator_then_text(self, monkeypatch, capsys):
+        self._stub_send(monkeypatch, {
+            "status": "ok",
+            "message": "scrolled down 3 steps",
+            "visible_text": "Comments (2)\nReply\nLoad more",
+        })
+        cmd_scroll(argparse.Namespace(direction="down", amount=3, site=None))
+        out = capsys.readouterr().out
+        lines = out.strip().split("\n")
+        assert lines[0] == "scrolled down 3 steps"
+        assert lines[1] == "---"
+        assert "Comments (2)" in out
+        assert "Load more" in out
+
+    def test_empty_visible_text_omits_separator(self, monkeypatch, capsys):
+        """Blank/missing visible_text should not produce a stray '---' line."""
+        self._stub_send(monkeypatch, {
+            "status": "ok",
+            "message": "scrolled up 1 steps",
+            "visible_text": "   \n\n  ",
+        })
+        cmd_scroll(argparse.Namespace(direction="up", amount=1, site=None))
+        out = capsys.readouterr().out.strip()
+        assert out == "scrolled up 1 steps"
+        assert "---" not in out
+
+    def test_missing_visible_text_field_is_safe(self, monkeypatch, capsys):
+        """Backwards-compat: response without visible_text key shouldn't crash."""
+        self._stub_send(monkeypatch, {
+            "status": "ok",
+            "message": "scrolled down 2 steps",
+        })
+        cmd_scroll(argparse.Namespace(direction="down", amount=2, site=None))
+        out = capsys.readouterr().out.strip()
+        assert out == "scrolled down 2 steps"
