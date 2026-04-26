@@ -41,6 +41,25 @@ logger = logging.getLogger("stealth_browser.daemon")
 IDLE_TIMEOUT_SECONDS = 1800  # 30 minutes
 
 
+def _err(
+    msg: str,
+    *,
+    code: str = "RUNTIME",
+    retryable: bool = True,
+    fix: str = "see `--help`",
+    **extra: Any,
+) -> dict[str, Any]:
+    """Build a structured error response (code/retryable/fix)."""
+    return {
+        "status": "error",
+        "error": msg,
+        "code": code,
+        "retryable": retryable,
+        "fix": fix,
+        **extra,
+    }
+
+
 class DaemonProtocol(asyncio.Protocol):
     """HTTP/1.1 protocol handler for daemon commands over Unix socket."""
 
@@ -84,7 +103,12 @@ class DaemonProtocol(asyncio.Protocol):
             status = "200 OK"
 
         except Exception as e:
-            resp_body = json.dumps({"status": "error", "error": str(e)})
+            resp_body = json.dumps(_err(
+                f"protocol error: {e}",
+                code="DAEMON_FAILED",
+                retryable=True,
+                fix="retry; check ~/.stealth-browser/*.log",
+            ))
             status = "500 Internal Server Error"
             logger.exception("command error")
 
@@ -191,7 +215,12 @@ class DaemonHandler:
             elif command == "cookie_refresh":
                 site = body.get("site")
                 if not site:
-                    return {"status": "error", "error": "site required for cookie refresh"}
+                    return _err(
+                        "site required for cookie refresh",
+                        code="USAGE",
+                        retryable=False,
+                        fix="pass --site <name>",
+                    )
                 from .cookies import clear_cache
                 clear_cache(site)
                 url = self.engine.page.url if self.engine.page else f"https://{site}"
@@ -246,13 +275,12 @@ class DaemonHandler:
                     hint = ""
                     if not wait_type:
                         hint = " (did you use 'kind' instead of 'type'?)"
-                    return {
-                        "status": "error",
-                        "error": (
-                            f"unknown wait type: {wait_type!r}{hint}. "
-                            f"Valid types: {valid}"
-                        ),
-                    }
+                    return _err(
+                        f"unknown wait type: {wait_type!r}{hint}. Valid types: {valid}",
+                        code="USAGE",
+                        retryable=False,
+                        fix=f"use one of: {valid}",
+                    )
                 return {"status": "ok", "message": msg}
 
             # -- F8: Dialog --
@@ -273,7 +301,12 @@ class DaemonHandler:
                     msg = self.engine.set_auto_dismiss(enabled)
                     return {"status": "ok", "message": msg}
                 else:
-                    return {"status": "error", "error": f"unknown dialog action: {action}"}
+                    return _err(
+                        f"unknown dialog action: {action}",
+                        code="USAGE",
+                        retryable=False,
+                        fix="use one of: accept, dismiss, info, auto-dismiss",
+                    )
 
             # -- F9: Navigation --
 
@@ -306,7 +339,12 @@ class DaemonHandler:
                     msg = await self.engine.tab_close(body.get("tab_id"))
                     return {"status": "ok", "message": msg}
                 else:
-                    return {"status": "error", "error": f"unknown tab action: {action}"}
+                    return _err(
+                        f"unknown tab action: {action}",
+                        code="USAGE",
+                        retryable=False,
+                        fix="use one of: list, create, switch, close",
+                    )
 
             # -- F13: Batch --
 
@@ -319,19 +357,23 @@ class DaemonHandler:
                         result = await self.handle(cmd)
                         results.append(result)
                         if result.get("status") == "error":
-                            return {
-                                "status": "error",
-                                "error": f"command {i} failed: {result.get('error')}",
-                                "completed": results,
-                                "failed_index": i,
-                            }
+                            return _err(
+                                f"command {i} failed: {result.get('error')}",
+                                code=result.get("code", "RUNTIME"),
+                                retryable=result.get("retryable", True),
+                                fix=result.get("fix", "see `--help`"),
+                                completed=results,
+                                failed_index=i,
+                            )
                     except Exception as e:
-                        return {
-                            "status": "error",
-                            "error": f"command {i} failed: {e}",
-                            "completed": results,
-                            "failed_index": i,
-                        }
+                        return _err(
+                            f"command {i} failed: {e}",
+                            code="RUNTIME",
+                            retryable=True,
+                            fix="check step schema; see `--help`",
+                            completed=results,
+                            failed_index=i,
+                        )
                     # Cognitive gap between commands (unless --fast)
                     if not fast and i < len(commands) - 1:
                         await asyncio.sleep(random.uniform(0.2, 0.8))
@@ -356,7 +398,12 @@ class DaemonHandler:
                     msg = self.engine.network_clear()
                     return {"status": "ok", "message": msg}
                 else:
-                    return {"status": "error", "error": f"unknown network action: {action}"}
+                    return _err(
+                        f"unknown network action: {action}",
+                        code="USAGE",
+                        retryable=False,
+                        fix="use one of: start, stop, list, clear",
+                    )
 
             elif command == "close":
                 asyncio.get_event_loop().call_soon(self._schedule_shutdown)
@@ -366,11 +413,27 @@ class DaemonHandler:
                 return {"status": "ok", "message": "pong"}
 
             else:
-                return {"status": "error", "error": f"unknown command: {command}"}
+                return _err(
+                    f"unknown command: {command}",
+                    code="USAGE",
+                    retryable=False,
+                    fix="run `stealth-browser --help` for supported commands",
+                )
 
         except Exception as e:
             logger.exception(f"command '{command}' failed")
-            return {"status": "error", "error": str(e)}
+            # Engine-side login_redirect surfaces here when navigation triggers it
+            # mid-command (e.g. cookie expired between calls).
+            msg = str(e)
+            low = msg.lower()
+            if "login_redirect" in low or "session expired" in low:
+                return _err(
+                    msg,
+                    code="AUTH_EXPIRED",
+                    retryable=False,
+                    fix="re-login to the site in Chrome and retry",
+                )
+            return _err(msg, code="RUNTIME", retryable=True, fix="retry; check ~/.stealth-browser/*.log")
 
     def _schedule_shutdown(self) -> None:
         asyncio.ensure_future(self._shutdown())
@@ -391,10 +454,12 @@ def _cleanup_files(session: str) -> None:
             pass
 
 
-async def _run_daemon(session: str, headed: bool) -> None:
+async def _run_daemon(
+    session: str, headed: bool, extensions: list[str] | None = None
+) -> None:
     """Main daemon coroutine: start engine + server, run until shutdown."""
     engine = StealthEngine()
-    await engine.launch(headed=headed)
+    await engine.launch(headed=headed, extensions=extensions)
 
     handler = DaemonHandler(engine, session)
     loop = asyncio.get_event_loop()
@@ -445,7 +510,9 @@ async def _signal_handler(
     asyncio.get_event_loop().stop()
 
 
-def start_daemon(session: str, headed: bool = False) -> None:
+def start_daemon(
+    session: str, headed: bool = False, extensions: list[str] | None = None
+) -> None:
     """Fork a daemon process and return immediately in the parent."""
     ensure_dirs()
     sock = socket_path(session)
@@ -487,7 +554,7 @@ def start_daemon(session: str, headed: bool = False) -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    asyncio.run(_run_daemon(session, headed))
+    asyncio.run(_run_daemon(session, headed, extensions))
     sys.exit(0)
 
 

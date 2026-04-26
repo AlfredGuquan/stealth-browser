@@ -4,7 +4,11 @@ import pytest
 from stealth_browser.utils import (
     STATE_DIR,
     SESSIONS_DIR,
+    EXIT_USAGE,
+    EXIT_AUTH_EXPIRED,
+    EXIT_RUNTIME,
     ensure_dirs,
+    error,
     get_chrome_ua,
     is_local_dev_url,
     is_login_redirect,
@@ -88,6 +92,60 @@ class TestIsLocalDevUrl:
         """No hostname -> not local dev (and don't crash)."""
         assert is_local_dev_url("not a url") is False
         assert is_local_dev_url("") is False
+
+
+class TestError:
+    """Structured error output: error/code/retryable/fix four-line format."""
+
+    def test_default_emits_four_lines(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            error("something broke")
+        captured = capsys.readouterr()
+        assert exc.value.code == 1  # default exit code
+        lines = captured.err.strip().split("\n")
+        assert lines[0] == "error: something broke"
+        assert lines[1] == "code: UNKNOWN"
+        assert lines[2] == "retryable: true"
+        assert lines[3].startswith("fix: ")
+
+    def test_full_fields(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            error(
+                "page.goto timed out",
+                exit_code=EXIT_RUNTIME,
+                code="TIMEOUT",
+                retryable=True,
+                fix="retry with longer --timeout",
+            )
+        captured = capsys.readouterr()
+        assert exc.value.code == EXIT_RUNTIME
+        assert "error: page.goto timed out" in captured.err
+        assert "code: TIMEOUT" in captured.err
+        assert "retryable: true" in captured.err
+        assert "fix: retry with longer --timeout" in captured.err
+
+    def test_retryable_false_renders_lowercase(self, capsys):
+        with pytest.raises(SystemExit):
+            error("auth expired", code="AUTH_EXPIRED", retryable=False, fix="re-login")
+        captured = capsys.readouterr()
+        assert "retryable: false" in captured.err
+
+    def test_usage_uses_exit_2(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            error("--site required", exit_code=EXIT_USAGE, code="USAGE", retryable=False, fix="pass --site")
+        assert exc.value.code == 2
+
+    def test_auth_expired_uses_exit_5(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            error("session expired", exit_code=EXIT_AUTH_EXPIRED, code="AUTH_EXPIRED", retryable=False, fix="re-login in Chrome")
+        assert exc.value.code == 5
+
+    def test_nothing_on_stdout(self, capsys):
+        """Errors must not pollute stdout -- agents may parse stdout for success data."""
+        with pytest.raises(SystemExit):
+            error("boom", code="RUNTIME", retryable=True, fix="retry")
+        captured = capsys.readouterr()
+        assert captured.out == ""
 
 
 class TestPaths:

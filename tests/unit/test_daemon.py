@@ -146,6 +146,72 @@ class TestDaemonHandler:
         assert handler.idle_seconds < 1.0
 
 
+class TestStructuredErrors:
+    """Every error response must carry code/retryable/fix (status.md F5)."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_command(self, handler):
+        result = await handler.handle({"command": "bogus"})
+        assert result["status"] == "error"
+        assert result["code"] == "USAGE"
+        assert result["retryable"] is False
+        assert "fix" in result and result["fix"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_dialog_action(self, handler):
+        result = await handler.handle({"command": "dialog", "action": "bogus"})
+        assert result["code"] == "USAGE"
+        assert result["retryable"] is False
+        assert "accept" in result["fix"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_tab_action(self, handler):
+        result = await handler.handle({"command": "tab", "action": "bogus"})
+        assert result["code"] == "USAGE"
+        assert result["retryable"] is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_network_action(self, handler):
+        result = await handler.handle({"command": "network", "action": "bogus"})
+        assert result["code"] == "USAGE"
+        assert result["retryable"] is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_wait_type(self, handler):
+        result = await handler.handle({"command": "wait", "type": "bogus"})
+        assert result["code"] == "USAGE"
+        assert result["retryable"] is False
+
+    @pytest.mark.asyncio
+    async def test_login_redirect_maps_to_auth_expired(self, handler, mock_engine):
+        """Engine raising 'login_redirect' surfaces as AUTH_EXPIRED, not RUNTIME."""
+        mock_engine.go_back.side_effect = RuntimeError("login_redirect detected")
+        result = await handler.handle({"command": "back"})
+        assert result["code"] == "AUTH_EXPIRED"
+        assert result["retryable"] is False
+        assert "Chrome" in result["fix"] or "login" in result["fix"].lower()
+
+    @pytest.mark.asyncio
+    async def test_runtime_exception_default(self, handler, mock_engine):
+        mock_engine.reload.side_effect = RuntimeError("page crashed")
+        result = await handler.handle({"command": "reload"})
+        assert result["code"] == "RUNTIME"
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_batch_propagates_inner_code(self, handler, mock_engine):
+        """Batch failure must surface inner command's code, not just RUNTIME."""
+        mock_engine.click.side_effect = RuntimeError("login_redirect detected")
+        result = await handler.handle({
+            "command": "batch",
+            "commands": [{"command": "click", "selector": "#a"}],
+        })
+        assert result["status"] == "error"
+        assert result["code"] == "AUTH_EXPIRED"
+        assert "completed" in result
+        assert result["failed_index"] == 0
+
+
 class TestSelectCheckCommands:
     """F10: select, check, uncheck via daemon."""
 

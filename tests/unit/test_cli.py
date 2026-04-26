@@ -1,7 +1,7 @@
 """Unit tests for stealth_browser.cli."""
 
 import pytest
-from stealth_browser.cli import build_parser, _site_from_url
+from stealth_browser.cli import build_parser, _site_from_url, _send
 
 
 class TestSiteFromUrl:
@@ -356,3 +356,156 @@ class TestScreenshotAnnotateParser:
         args = parser.parse_args(["screenshot", "/tmp/x.png", "--annotate"])
         assert args.path == "/tmp/x.png"
         assert args.annotate is True
+
+
+class TestExtensionFlag:
+    """--extension PATH: loads unpacked Chrome extension (repeatable, implies --headed)."""
+
+    def test_no_extension_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["open", "https://example.com"])
+        assert args.extensions is None
+
+    def test_single_extension(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["--extension", "/tmp/ext", "open", "https://example.com"]
+        )
+        assert args.extensions == ["/tmp/ext"]
+
+    def test_multiple_extensions(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "--extension", "/tmp/ext1",
+            "--extension", "/tmp/ext2",
+            "open", "https://example.com",
+        ])
+        assert args.extensions == ["/tmp/ext1", "/tmp/ext2"]
+
+
+class TestEnsureDaemonExtensions:
+    """_ensure_daemon auto-upgrades headed=True when extensions present."""
+
+    def test_extensions_auto_force_headed(self, monkeypatch):
+        from stealth_browser import cli as cli_mod
+
+        calls = {}
+
+        def fake_start_daemon(session, headed, extensions=None):
+            calls["session"] = session
+            calls["headed"] = headed
+            calls["extensions"] = extensions
+
+        monkeypatch.setattr(cli_mod, "is_daemon_running", lambda s: False)
+        monkeypatch.setattr(cli_mod, "start_daemon", fake_start_daemon)
+
+        cli_mod._ensure_daemon("example.com", headed=False, extensions=["/tmp/ext"])
+
+        assert calls["headed"] is True
+        assert calls["extensions"] == ["/tmp/ext"]
+
+    def test_no_extensions_preserves_headed_false(self, monkeypatch):
+        from stealth_browser import cli as cli_mod
+
+        calls = {}
+
+        def fake_start_daemon(session, headed, extensions=None):
+            calls["headed"] = headed
+            calls["extensions"] = extensions
+
+        monkeypatch.setattr(cli_mod, "is_daemon_running", lambda s: False)
+        monkeypatch.setattr(cli_mod, "start_daemon", fake_start_daemon)
+
+        cli_mod._ensure_daemon("example.com", headed=False)
+
+        assert calls["headed"] is False
+        assert calls["extensions"] is None
+
+
+class TestSendStructuredErrors:
+    """_send must propagate daemon code/retryable/fix and pick exit code by code."""
+
+    def _fake_daemon_response(self, monkeypatch, response: dict):
+        from stealth_browser import cli as cli_mod
+        monkeypatch.setattr(cli_mod, "send_command", lambda *a, **kw: response)
+
+    def test_auth_expired_exits_5(self, monkeypatch, capsys):
+        self._fake_daemon_response(monkeypatch, {
+            "status": "error",
+            "error": "session expired",
+            "code": "AUTH_EXPIRED",
+            "retryable": False,
+            "fix": "re-login in Chrome",
+        })
+        with pytest.raises(SystemExit) as exc:
+            _send("example.com", "click", selector="#a")
+        assert exc.value.code == 5
+        err = capsys.readouterr().err
+        assert "code: AUTH_EXPIRED" in err
+        assert "retryable: false" in err
+        assert "fix: re-login in Chrome" in err
+
+    def test_usage_exits_2(self, monkeypatch):
+        self._fake_daemon_response(monkeypatch, {
+            "status": "error",
+            "error": "unknown command: bogus",
+            "code": "USAGE",
+            "retryable": False,
+            "fix": "see --help",
+        })
+        with pytest.raises(SystemExit) as exc:
+            _send("example.com", "bogus")
+        assert exc.value.code == 2
+
+    def test_invalid_input_exits_2(self, monkeypatch):
+        self._fake_daemon_response(monkeypatch, {
+            "status": "error",
+            "error": "bad shape",
+            "code": "INVALID_INPUT",
+            "retryable": False,
+            "fix": "fix JSON",
+        })
+        with pytest.raises(SystemExit) as exc:
+            _send("example.com", "batch")
+        assert exc.value.code == 2
+
+    def test_runtime_exits_1(self, monkeypatch, capsys):
+        self._fake_daemon_response(monkeypatch, {
+            "status": "error",
+            "error": "page.goto timed out",
+            "code": "RUNTIME",
+            "retryable": True,
+            "fix": "retry with longer --timeout",
+        })
+        with pytest.raises(SystemExit) as exc:
+            _send("example.com", "open")
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "retryable: true" in err
+
+    def test_unknown_code_exits_1(self, monkeypatch):
+        """Code we've never seen before still maps to default exit 1."""
+        self._fake_daemon_response(monkeypatch, {
+            "status": "error",
+            "error": "weird",
+            "code": "WEIRD_THING",
+            "retryable": True,
+            "fix": "?",
+        })
+        with pytest.raises(SystemExit) as exc:
+            _send("example.com", "open")
+        assert exc.value.code == 1
+
+    def test_no_stdout_on_error(self, monkeypatch, capsys):
+        """Failure path must not pollute stdout."""
+        self._fake_daemon_response(monkeypatch, {
+            "status": "error",
+            "error": "boom",
+            "code": "RUNTIME",
+            "retryable": True,
+            "fix": "retry",
+        })
+        with pytest.raises(SystemExit):
+            _send("example.com", "click", selector="#a")
+        captured = capsys.readouterr()
+        assert captured.out == ""

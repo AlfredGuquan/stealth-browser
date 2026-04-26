@@ -91,9 +91,42 @@ def is_local_dev_url(url: str) -> bool:
     return host in LOCAL_HOSTS or host.endswith(".local")
 
 
-def error(msg: str, exit_code: int = 1) -> NoReturn:
-    """Print error to stderr and exit."""
+# Exit code categories (status.md F5):
+#   2 — usage / input shape errors (agent fix: change command)
+#   5 — auth expired / cookie failed (agent fix: ask user to re-login)
+#   1 — everything else (runtime, daemon, unknown)
+EXIT_RUNTIME = 1
+EXIT_USAGE = 2
+EXIT_AUTH_EXPIRED = 5
+
+# Known structured error codes -- free-form strings, not enforced.
+# Agents key off these in stderr `code:` lines.
+#   USAGE          — bad CLI args / unknown action / missing required flag
+#   INVALID_INPUT  — batch JSON shape / schema errors
+#   NO_SESSION     — no active session for this site
+#   AUTH_EXPIRED   — login_redirect detected, cookies expired
+#   DAEMON_FAILED  — daemon start / IPC failure
+#   RUNTIME        — engine / browser runtime error (timeout, element missing)
+#   UNKNOWN        — fallback
+
+
+def error(
+    msg: str,
+    exit_code: int = EXIT_RUNTIME,
+    *,
+    code: str = "UNKNOWN",
+    retryable: bool = True,
+    fix: str = "see `--help`",
+) -> NoReturn:
+    """Print structured error to stderr and exit.
+
+    Output is four lines, each `key: value`. Agents parse by line prefix
+    (status.md F5 explicitly rules out JSON for error envelope).
+    """
     print(f"error: {msg}", file=sys.stderr)
+    print(f"code: {code}", file=sys.stderr)
+    print(f"retryable: {'true' if retryable else 'false'}", file=sys.stderr)
+    print(f"fix: {fix}", file=sys.stderr)
     sys.exit(exit_code)
 
 

@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .daemon import is_daemon_running, send_command, start_daemon
-from .utils import error, is_local_dev_url
+from .utils import EXIT_AUTH_EXPIRED, EXIT_RUNTIME, EXIT_USAGE, error, is_local_dev_url
 
 
 def _site_from_url(url: str) -> str:
@@ -36,13 +36,25 @@ def _site_from_url(url: str) -> str:
     return host
 
 
-def _ensure_daemon(session: str, headed: bool) -> None:
-    """Start the daemon if not already running."""
+def _ensure_daemon(
+    session: str, headed: bool, extensions: list[str] | None = None
+) -> None:
+    """Start the daemon if not already running.
+
+    Extensions imply headed (Chrome requirement); we auto-upgrade rather than error.
+    """
+    if extensions and not headed:
+        headed = True
     if not is_daemon_running(session):
         try:
-            start_daemon(session, headed=headed)
+            start_daemon(session, headed=headed, extensions=extensions)
         except RuntimeError as e:
-            error(f"failed to start daemon: {e}")
+            error(
+                f"failed to start daemon: {e}",
+                code="DAEMON_FAILED",
+                retryable=True,
+                fix="retry; check ~/.stealth-browser/*.log",
+            )
 
 
 def _send(session: str, command: str, **kwargs) -> dict:
@@ -50,12 +62,36 @@ def _send(session: str, command: str, **kwargs) -> dict:
     try:
         result = send_command(session, command, **kwargs)
     except RuntimeError as e:
-        error(str(e))
+        error(
+            str(e),
+            code="DAEMON_FAILED",
+            retryable=True,
+            fix="retry; daemon may have crashed (check ~/.stealth-browser/*.log)",
+        )
     except Exception as e:
-        error(f"communication error: {e}")
+        error(
+            f"communication error: {e}",
+            code="DAEMON_FAILED",
+            retryable=True,
+            fix="retry; daemon may have crashed",
+        )
 
     if result.get("status") == "error":
-        error(result.get("error", "unknown error"))
+        # Map AUTH_EXPIRED to exit 5, USAGE/INVALID_INPUT to exit 2, else 1.
+        code = result.get("code", "UNKNOWN")
+        if code == "AUTH_EXPIRED":
+            exit_code = EXIT_AUTH_EXPIRED
+        elif code in ("USAGE", "INVALID_INPUT"):
+            exit_code = EXIT_USAGE
+        else:
+            exit_code = EXIT_RUNTIME
+        error(
+            result.get("error", "unknown error"),
+            exit_code=exit_code,
+            code=code,
+            retryable=result.get("retryable", True),
+            fix=result.get("fix", "see `--help`"),
+        )
 
     return result
 
@@ -72,7 +108,7 @@ def cmd_open(args: argparse.Namespace) -> None:
     # or when --no-cookie is explicitly set.
     skip_cookies = bool(getattr(args, "no_cookie", False)) or is_local_dev_url(url)
 
-    _ensure_daemon(session, args.headed)
+    _ensure_daemon(session, args.headed, getattr(args, "extensions", None))
     result = _send(
         session,
         "open",
@@ -82,15 +118,19 @@ def cmd_open(args: argparse.Namespace) -> None:
         skip_cookies=skip_cookies,
     )
 
+    if result.get("login_redirect"):
+        # Failure path: stderr only. Don't print URL/Title to stdout --
+        # agents may misread stdout as success (status.md F5).
+        error(
+            f"session expired for {site}",
+            exit_code=EXIT_AUTH_EXPIRED,
+            code="AUTH_EXPIRED",
+            retryable=False,
+            fix=f"log in to {site} in Chrome, then retry",
+        )
+
     print(f"URL: {result['url']}")
     print(f"Title: {result['title']}")
-
-    if result.get("login_redirect"):
-        print(
-            f"Session expired. Please log in to {site} in Chrome and retry.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
@@ -174,7 +214,13 @@ def cmd_cookie_refresh(args: argparse.Namespace) -> None:
     session = _get_session(args)
     site = args.site
     if not site:
-        error("--site required for cookie refresh")
+        error(
+            "--site required for cookie refresh",
+            exit_code=EXIT_USAGE,
+            code="USAGE",
+            retryable=False,
+            fix="pass --site <name>",
+        )
     result = _send(session, "cookie_refresh", site=site)
     print(result["message"])
 
@@ -232,7 +278,13 @@ def cmd_wait(args: argparse.Namespace) -> None:
     elif wait_type == "url":
         # F15: wait url <glob-pattern>
         if not target:
-            error("wait url: pattern required (e.g. 'wait url \"**/success\"')")
+            error(
+                "wait url: pattern required (e.g. 'wait url \"**/success\"')",
+                exit_code=EXIT_USAGE,
+                code="USAGE",
+                retryable=False,
+                fix='pass a glob pattern, e.g. wait url "**/dashboard"',
+            )
         result = _send(
             session, "wait", type="url", target=target, timeout=timeout
         )
@@ -285,7 +337,13 @@ def cmd_dialog(args: argparse.Namespace) -> None:
         result = _send(session, "dialog", action="auto-dismiss", enabled=enabled)
         print(result["message"])
     else:
-        error(f"unknown dialog action: {action}")
+        error(
+            f"unknown dialog action: {action}",
+            exit_code=EXIT_USAGE,
+            code="USAGE",
+            retryable=False,
+            fix="use one of: accept, dismiss, info, auto-dismiss",
+        )
 
 
 # -- F9: Navigation --
@@ -357,7 +415,13 @@ def cmd_tab(args: argparse.Namespace) -> None:
         print(result["message"])
 
     else:
-        error(f"unknown tab action: {action}")
+        error(
+            f"unknown tab action: {action}",
+            exit_code=EXIT_USAGE,
+            code="USAGE",
+            retryable=False,
+            fix="use one of: list, create, switch, close",
+        )
 
 
 # -- F13: Batch --
@@ -370,10 +434,22 @@ def cmd_batch(args: argparse.Namespace) -> None:
     try:
         commands = json.loads(raw)
     except json.JSONDecodeError as e:
-        error(f"invalid JSON from stdin: {e}")
+        error(
+            f"invalid JSON from stdin: {e}",
+            exit_code=EXIT_USAGE,
+            code="INVALID_INPUT",
+            retryable=False,
+            fix="check JSON syntax in batch input",
+        )
 
     if not isinstance(commands, list):
-        error("batch expects a JSON array of command objects")
+        error(
+            "batch expects a JSON array of command objects",
+            exit_code=EXIT_USAGE,
+            code="INVALID_INPUT",
+            retryable=False,
+            fix="wrap commands in [...] (top-level must be an array)",
+        )
 
     # Bypass _send() -- batch returns structured partial results on error,
     # and _send() would sys.exit(1) before we can display them.
@@ -385,9 +461,19 @@ def cmd_batch(args: argparse.Namespace) -> None:
             commands=commands, fast=args.fast,
         )
     except RuntimeError as e:
-        error(str(e))
+        error(
+            str(e),
+            code="DAEMON_FAILED",
+            retryable=True,
+            fix="retry; daemon may have crashed",
+        )
     except Exception as e:
-        error(f"communication error: {e}")
+        error(
+            f"communication error: {e}",
+            code="DAEMON_FAILED",
+            retryable=True,
+            fix="retry; daemon may have crashed",
+        )
 
     if result["status"] == "ok":
         print(f"batch: {len(result['results'])} commands completed")
@@ -396,14 +482,28 @@ def cmd_batch(args: argparse.Namespace) -> None:
             msg = r.get("message", r.get("content", r.get("value", r.get("path", ""))))
             print(f"  [{i}] {status}: {msg}")
     else:
+        # Partial-failure path: show completed-count on stderr too (no stdout
+        # writes -- agents must not see partial-success on stdout).
         completed = result.get("completed", [])
         print(
-            f"batch: failed at command {result.get('failed_index', '?')}: "
-            f"{result.get('error', 'unknown')}",
+            f"batch: failed at command {result.get('failed_index', '?')} "
+            f"({len(completed)} completed before failure)",
             file=sys.stderr,
         )
-        print(f"  {len(completed)} commands completed before failure")
-        sys.exit(1)
+        code = result.get("code", "RUNTIME")
+        if code == "AUTH_EXPIRED":
+            exit_code = EXIT_AUTH_EXPIRED
+        elif code in ("USAGE", "INVALID_INPUT"):
+            exit_code = EXIT_USAGE
+        else:
+            exit_code = EXIT_RUNTIME
+        error(
+            result.get("error", "unknown"),
+            exit_code=exit_code,
+            code=code,
+            retryable=result.get("retryable", True),
+            fix=result.get("fix", "see `--help`"),
+        )
 
 
 # -- Network recording --
@@ -481,7 +581,13 @@ def cmd_network(args: argparse.Namespace) -> None:
         print(result["message"])
 
     else:
-        error(f"unknown network action: {action}")
+        error(
+            f"unknown network action: {action}",
+            exit_code=EXIT_USAGE,
+            code="USAGE",
+            retryable=False,
+            fix="use one of: start, stop, list, clear",
+        )
 
 
 def _get_session(args: argparse.Namespace) -> str:
@@ -492,7 +598,12 @@ def _get_session(args: argparse.Namespace) -> str:
     if STATE_DIR.exists():
         for f in STATE_DIR.glob("*.pid"):
             return f.stem
-    error("no active session. Run 'stealth-browser open <url>' first.")
+    error(
+        "no active session. Run 'stealth-browser open <url>' first.",
+        code="NO_SESSION",
+        retryable=False,
+        fix="run `stealth-browser open <url>` to start a session",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -518,6 +629,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="no_cookie",
         help="Skip cookie injection and login_redirect detection (F14). "
              "Useful for local dev URLs or sites where cookies aren't needed.",
+    )
+    parser.add_argument(
+        "--extension",
+        action="append",
+        dest="extensions",
+        default=None,
+        metavar="PATH",
+        help="Load an unpacked Chrome extension (repeatable). "
+             "Implies --headed. Forks a separate persistent profile under "
+             "~/.stealth-browser/ext-profile/.",
     )
 
     sub = parser.add_subparsers(dest="command", help="Available commands")

@@ -35,9 +35,6 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 ### Agent 接口 polish（F5 细化）
 
 - [ ] `_get_session()` fallback 非确定性：不指定 `--site` 且有多个活跃 session 时，遍历 `STATE_DIR.glob("*.pid")` 返回顺序不保证，可能操作到非预期 session。修复方向：多 session 时必须显式 `--site`，否则报错列出所有可选 session
-- [ ] `cmd_open` 登录重定向时混合输出：检测到 login_redirect 后 stdout 已经打印了 URL/Title 再 stderr 报错 exit 1，agent 可能基于 stdout 内容误判成功。修复方向：失败路径只写 stderr，stdout 不输出任何字段
-- [ ] Exit code 分档：参数错误用 exit 2，认证过期/cookie 失效用 exit 5，其他运行时错误统一 exit 1。不强行细分网络/超时/元素未找到——Patchright 层错误难以可靠分类，误分类会诱导 agent 走错分支
-- [ ] 错误消息结构化（保持纯文本，F5 明确排除 JSON）：在 `error:` 后追加 `code:` `retryable:` `fix:` 三行，agent 靠 key 解析。例：`error: page.goto timed out\ncode: TIMEOUT\nretryable: true\nfix: retry with longer --timeout`
 - [ ] `--help` 增强：每个子命令补 EXAMPLES 段和 LIMITATIONS 段，agent 靠 `--help` 自发现用法和已知边界
 
 ### P2 — 效率提升（未实现部分）
@@ -58,6 +55,8 @@ V2：从反检测专用工具升级为通用浏览器自动化 CLI，替代 agen
 
 ## Completed
 
+- 错误消息结构化（F5 三项）：utils.error 输出 4 行 (error/code/retryable/fix)；exit code 分档（USAGE→2、AUTH_EXPIRED→5、其他→1）；cmd_open login_redirect 走 error()，失败路径不污染 stdout。daemon 加 `_err()` helper，10 处错误响应迁移；cli 14 处 error() 调用补 code/retryable/fix；engine→daemon 异常自动判 AUTH_EXPIRED。240 单测 PASS（新增 14：6 utils + 8 daemon + 6 cli），e2e NO_SESSION 验证 4 行输出 + exit 1。[2026-04-26]
+- Agent 反馈修复（4 fix）：click post-verify 检测静默失败、fill Meta+A→Delete 替换而非追加、ref 重复匹配 graceful handling、batch wait 错误消息列出合法 type。211 单元测试 PASS + code review + e2e 验证（example.com 导航 click + localhost fill 替换）[2026-04-13]
 - V3 实现：3 个 feature（F14 localhost cookie/login 跳过、F15 wait url pattern、F16 screenshot annotate），32 新单元测试，202 总测试 PASS。Tracer findings + code-review 2 important issues 修复（F16 scroll-behavior:smooth 竞态、F15 异常类型过宽）。Smoke test 覆盖 F14（localhost smooth-scroll 页）+ F15（fixture 跨页导航 positive/negative）+ F16（snapshot + annotate 输出 PNG）
 - V2 实现（PR#1）：8 个 feature（refs/wait/dialog/nav/select-check/tab/iframe/batch），170 单元测试
 - V2 code review：2 critical + 3 important 全部修复
